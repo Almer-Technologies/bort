@@ -8,6 +8,7 @@ import android.content.Intent
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
+import android.util.Log
 import androidx.core.app.NotificationChannelCompat
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
@@ -30,6 +31,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 open class App : Application(), UpdaterProvider, Runnable {
+    val ALMER_OTA_PREFS = "almer_ota_prefs"
     lateinit var components: AppComponents
     private lateinit var appStateListenerJob: Job
     private lateinit var eventListenerJob: Job
@@ -56,6 +58,8 @@ open class App : Application(), UpdaterProvider, Runnable {
 
     override fun onCreate() {
         super.onCreate()
+        //Almer: Clear this always on boot before checking the ota
+        getSharedPreferences(ALMER_OTA_PREFS, Context.MODE_PRIVATE).edit().clear().apply()
 
         Logger.initTags(tag = "bort-ota", testTag = "bort-ota-test")
 
@@ -70,7 +74,9 @@ open class App : Application(), UpdaterProvider, Runnable {
         appStateListenerJob = CoroutineScope(Dispatchers.Main).launch {
             updater().updateState
                 .collect { state ->
-                    if (state is State.UpdateAvailable && shouldAutoInstallOtaUpdate(
+                    if(state is State.Idle) {
+                        incrementIdleCount();
+                    } else if (state is State.UpdateAvailable && shouldAutoInstallOtaUpdate(
                             state.ota,
                             applicationContext
                         )
@@ -112,6 +118,17 @@ open class App : Application(), UpdaterProvider, Runnable {
                     }
                 }
         }
+    }
+
+    /**
+     * This method is used to track how many times OTA has been checked.
+     * If the count == 0, which means the OTA is checked for first time, we mark it as force ota.
+     * Subsequent ota checks are marked as optional.
+     */
+    private fun incrementIdleCount() {
+        var count = getSharedPreferences(ALMER_OTA_PREFS, Context.MODE_PRIVATE).getInt("count", 0);
+        getSharedPreferences(ALMER_OTA_PREFS, Context.MODE_PRIVATE).edit().putInt("count", (++count)).apply()
+        Log.i("bort-ota-test", "OTA Check count: $count")
     }
 
     companion object {
@@ -177,10 +194,12 @@ open class App : Application(), UpdaterProvider, Runnable {
 
 
     private fun launchForceUpdateUI() {
-        //Add condition to show the UI only once.
-        val intent = Intent(this, UpdateActivity::class.java)
-        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        startActivity(intent)
+        var count = getSharedPreferences(ALMER_OTA_PREFS, Context.MODE_PRIVATE).getInt("count", 0);
+        if(count == 0) {
+            val intent = Intent(this, UpdateActivity::class.java)
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            startActivity(intent)
+        }
     }
 
     private fun cancelUpdateNotification() {
