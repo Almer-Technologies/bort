@@ -5,6 +5,10 @@ import android.app.Application
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.os.Handler
+import android.os.Looper
+import android.provider.Settings
+import android.util.Log
 import androidx.core.app.NotificationChannelCompat
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
@@ -23,29 +27,64 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
-open class App : Application(), UpdaterProvider {
+open class App : Application(), UpdaterProvider, Runnable {
+    val ALMER_OTA_PREFS = "almer_ota_prefs"
     lateinit var components: AppComponents
     private lateinit var appStateListenerJob: Job
     private lateinit var eventListenerJob: Job
+    private val handler = Handler(Looper.getMainLooper())
+
+    override fun run() {
+        if (isSetupCompleted) {
+            //Race condition, ota checks would have already happened and failed.
+            clearOTACheckCount()
+            checkOta()
+        } else {
+            handler.postDelayed(this, 10000)
+        }
+    }
+
+    private fun checkOta() {
+        CoroutineScope(Dispatchers.Default).launch {
+            Logger.w("Update check requested via handler")
+            with(updater()) {
+                perform(Action.CheckForUpdate(background = true))
+            }
+        }
+    }
+
+    private val isSetupCompleted: Boolean
+        get() = Settings.Secure.getInt(contentResolver, "user_setup_complete", 0) != 0
 
     override fun onCreate() {
         super.onCreate()
 
         Logger.initTags(tag = "bort-ota", testTag = "bort-ota-test")
-
         if (!isPrimaryUser()) {
             Logger.w("bort-ota disabled for secondary user")
             disableAppComponents(applicationContext)
             System.exit(0)
         }
 
-        components = createComponents(applicationContext)
+        clearOTACheckCount()
+        //Start this one to check if the OTA should be checked.
+        if (!isSetupCompleted) {
+            handler.postDelayed(this, 10000)
+        }
 
+        components = createComponents(applicationContext)
         // Listen to state changes for background workers, if an update is found in the background show a notification
         appStateListenerJob = CoroutineScope(Dispatchers.Main).launch {
             updater().updateState
                 .collect { state ->
-                    if (state is State.UpdateAvailable && shouldAutoInstallOtaUpdate(state.ota, applicationContext)) {
+                    //State triggered when there is no OTA after a check.
+                    if (state is State.Idle) {
+                        incrementOTACheckCount();
+                    } else if (state is State.UpdateAvailable && shouldAutoInstallOtaUpdate(
+                            state.ota,
+                            applicationContext
+                        )
+                    ) {
                         updater().perform(Action.DownloadUpdate)
                     } else if (state is State.ReadyToInstall && shouldAutoInstallOtaUpdate(
                             state.ota,
@@ -61,6 +100,9 @@ open class App : Application(), UpdaterProvider {
                         updater().perform(Action.Reboot)
                     } else if (state is State.UpdateAvailable && state.background) {
                         sendUpdateNotification(state.ota)
+                        launchForceUpdateUI()
+                    } else if (state is State.UpdateDownloading) {
+                        launchForceUpdateUI()
                     } else {
                         cancelUpdateNotification()
                     }
@@ -81,13 +123,34 @@ open class App : Application(), UpdaterProvider {
         }
     }
 
+    /**
+     * This method is used to track how many times OTA has been checked.
+     * If the count == 0, which means the OTA is checked for first time, we mark it as force ota.
+     * Subsequent ota checks are marked as optional.
+     */
+    private fun incrementOTACheckCount() {
+        var count = getSharedPreferences(ALMER_OTA_PREFS, Context.MODE_PRIVATE).getInt("count", 0);
+        getSharedPreferences(ALMER_OTA_PREFS, Context.MODE_PRIVATE).edit()
+            .putInt("count", (++count)).apply()
+        Log.i("bort-ota-test", "OTA Check count: $count")
+    }
+
+    private val getOTACheckCount: Int
+        get() = getSharedPreferences(ALMER_OTA_PREFS, Context.MODE_PRIVATE).getInt("count", 0)
+
+    private fun clearOTACheckCount() {
+        //Almer: Clear this always on boot before checking the ota
+        getSharedPreferences(ALMER_OTA_PREFS, Context.MODE_PRIVATE).edit().clear().apply()
+    }
+
     companion object {
-        private fun shouldAutoInstallOtaUpdate(ota: Ota, context: Context): Boolean = shouldAutoInstallOtaUpdate(
-            ota = ota,
-            defaultValue = BuildConfig.OTA_AUTO_INSTALL,
-            canInstallNow = ::custom_canAutoInstallOtaUpdateNow,
-            context = context,
-        )
+        private fun shouldAutoInstallOtaUpdate(ota: Ota, context: Context): Boolean =
+            shouldAutoInstallOtaUpdate(
+                ota = ota,
+                defaultValue = BuildConfig.OTA_AUTO_INSTALL,
+                canInstallNow = ::custom_canAutoInstallOtaUpdateNow,
+                context = context,
+            )
 
         internal fun shouldAutoInstallOtaUpdate(
             ota: Ota,
@@ -118,7 +181,10 @@ open class App : Application(), UpdaterProvider {
     private fun sendUpdateNotification(ota: Ota) {
         val notificationManager = NotificationManagerCompat.from(this)
 
-        NotificationChannelCompat.Builder(UPDATE_AVAILABLE, NotificationManagerCompat.IMPORTANCE_LOW)
+        NotificationChannelCompat.Builder(
+            UPDATE_AVAILABLE,
+            NotificationManagerCompat.IMPORTANCE_LOW
+        )
             .setName(getString(R.string.update_available))
             .setDescription(getString(R.string.update_available))
             .build()
@@ -135,6 +201,16 @@ open class App : Application(), UpdaterProvider {
             .setAutoCancel(true)
             .build()
             .also { notificationManager.notify(UPDATE_AVAILABLE_NOTIFICATION_ID, it) }
+
+    }
+
+
+    private fun launchForceUpdateUI() {
+        if(getOTACheckCount <=1) {
+            val intent = Intent(this, UpdateActivity::class.java)
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            startActivity(intent)
+        }
     }
 
     private fun cancelUpdateNotification() {
@@ -146,7 +222,10 @@ open class App : Application(), UpdaterProvider {
     private fun showUpdateCompleteNotification(success: Boolean) {
         val notificationManager = NotificationManagerCompat.from(this)
 
-        NotificationChannelCompat.Builder(UPDATE_AVAILABLE, NotificationManagerCompat.IMPORTANCE_LOW)
+        NotificationChannelCompat.Builder(
+            UPDATE_AVAILABLE,
+            NotificationManagerCompat.IMPORTANCE_LOW
+        )
             .setName(getString(R.string.update_available))
             .setDescription(getString(R.string.update_available))
             .build()

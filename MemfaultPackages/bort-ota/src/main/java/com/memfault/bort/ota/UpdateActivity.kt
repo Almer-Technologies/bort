@@ -10,6 +10,7 @@ import android.widget.ProgressBar
 import android.widget.TextView
 import androidx.activity.viewModels
 import androidx.appcompat.app.AppCompatActivity
+import androidx.appcompat.app.AppCompatDelegate
 import androidx.core.view.isVisible
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.activityViewModels
@@ -31,10 +32,11 @@ class UpdateActivity : AppCompatActivity() {
         setContentView(R.layout.settings_container)
         setTitle(R.string.app_name)
 
-        supportActionBar?.apply {
-            setHomeAsUpIndicator(R.drawable.ic_baseline_arrow_back_24)
-            setDisplayHomeAsUpEnabled(true)
-        }
+//        supportActionBar?.apply {
+//            setHomeAsUpIndicator(R.drawable.ic_baseline_arrow_back_24)
+//            setDisplayHomeAsUpEnabled(true)
+//        }
+        AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_YES)
 
         val model: UpdateViewModel by viewModels { UpdateViewModelFactory(application.components) }
         lifecycleScope.launchWhenStarted {
