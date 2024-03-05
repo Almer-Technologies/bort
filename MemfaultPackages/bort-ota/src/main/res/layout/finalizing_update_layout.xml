@@ -38,7 +38,7 @@
         android:indeterminate="true"
         android:indeterminateTint="@color/full_white"
         android:progressTint="@color/full_white"
-        android:scaleY="5" />
+        android:scaleY="3" />
 
     <LinearLayout
         android:layout_width="wrap_content"

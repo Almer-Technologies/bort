@@ -5,6 +5,9 @@ import android.app.Application
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.os.Handler
+import android.os.Looper
+import android.provider.Settings
 import androidx.core.app.NotificationChannelCompat
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
@@ -14,6 +17,8 @@ import com.memfault.bort.ota.lib.Ota
 import com.memfault.bort.ota.lib.State
 import com.memfault.bort.ota.lib.Updater
 import com.memfault.bort.ota.lib.UpdaterProvider
+import com.memfault.bort.ota.lib.allowsUpdateCheck
+import com.memfault.bort.ota.lib.updater
 import com.memfault.bort.shared.BuildConfig
 import com.memfault.bort.shared.Logger
 import com.memfault.bort.shared.disableAppComponents
@@ -21,12 +26,33 @@ import com.memfault.bort.shared.isPrimaryUser
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
-open class App : Application(), UpdaterProvider {
+open class App : Application(), UpdaterProvider, Runnable {
     lateinit var components: AppComponents
     private lateinit var appStateListenerJob: Job
     private lateinit var eventListenerJob: Job
+    private val handler = Handler(Looper.getMainLooper())
+
+    override fun run(){
+        if (isSetupCompleted) {
+            checkOta()
+        }else{
+            handler.postDelayed(this, 10000)
+        }
+    }
+
+    private fun checkOta(){
+        CoroutineScope(Dispatchers.Default).launch {
+            Logger.w("Update check requested via handler")
+            with(updater()) {
+                perform(Action.CheckForUpdate(background = true))
+            }
+        }
+    }
+    private val isSetupCompleted: Boolean
+        get() = Settings.Secure.getInt(contentResolver, "user_setup_complete", 0) != 0
 
     override fun onCreate() {
         super.onCreate()
