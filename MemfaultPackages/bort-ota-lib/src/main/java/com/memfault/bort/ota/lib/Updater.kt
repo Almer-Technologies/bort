@@ -239,6 +239,8 @@ class Updater private constructor(
     private val fallbackOtaSettings: FallbackOtaSettings,
     context: Context,
 ) {
+    @Volatile
+    var forceUpdate: Boolean = true
     private val _updateState = MutableStateFlow<State>(State.Idle)
     val updateState: StateFlow<State> = _updateState
 
