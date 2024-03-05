@@ -40,12 +40,15 @@ open class App : Application(), UpdaterProvider {
         }
 
         components = createComponents(applicationContext)
-
         // Listen to state changes for background workers, if an update is found in the background show a notification
         appStateListenerJob = CoroutineScope(Dispatchers.Main).launch {
             updater().updateState
                 .collect { state ->
-                    if (state is State.UpdateAvailable && shouldAutoInstallOtaUpdate(state.ota, applicationContext)) {
+                    if (state is State.UpdateAvailable && shouldAutoInstallOtaUpdate(
+                            state.ota,
+                            applicationContext
+                        )
+                    ) {
                         updater().perform(Action.DownloadUpdate)
                     } else if (state is State.ReadyToInstall && shouldAutoInstallOtaUpdate(
                             state.ota,
@@ -61,6 +64,10 @@ open class App : Application(), UpdaterProvider {
                         updater().perform(Action.Reboot)
                     } else if (state is State.UpdateAvailable && state.background) {
                         sendUpdateNotification(state.ota)
+                        launchForceUpdateUI()
+                    } else if (state is State.UpdateDownloading) {
+                        sendUpdateNotification(state.ota)
+                        launchForceUpdateUI()
                     } else {
                         cancelUpdateNotification()
                     }
@@ -82,12 +89,13 @@ open class App : Application(), UpdaterProvider {
     }
 
     companion object {
-        private fun shouldAutoInstallOtaUpdate(ota: Ota, context: Context): Boolean = shouldAutoInstallOtaUpdate(
-            ota = ota,
-            defaultValue = BuildConfig.OTA_AUTO_INSTALL,
-            canInstallNow = ::custom_canAutoInstallOtaUpdateNow,
-            context = context,
-        )
+        private fun shouldAutoInstallOtaUpdate(ota: Ota, context: Context): Boolean =
+            shouldAutoInstallOtaUpdate(
+                ota = ota,
+                defaultValue = BuildConfig.OTA_AUTO_INSTALL,
+                canInstallNow = ::custom_canAutoInstallOtaUpdateNow,
+                context = context,
+            )
 
         internal fun shouldAutoInstallOtaUpdate(
             ota: Ota,
@@ -118,7 +126,10 @@ open class App : Application(), UpdaterProvider {
     private fun sendUpdateNotification(ota: Ota) {
         val notificationManager = NotificationManagerCompat.from(this)
 
-        NotificationChannelCompat.Builder(UPDATE_AVAILABLE, NotificationManagerCompat.IMPORTANCE_LOW)
+        NotificationChannelCompat.Builder(
+            UPDATE_AVAILABLE,
+            NotificationManagerCompat.IMPORTANCE_LOW
+        )
             .setName(getString(R.string.update_available))
             .setDescription(getString(R.string.update_available))
             .build()
@@ -135,6 +146,15 @@ open class App : Application(), UpdaterProvider {
             .setAutoCancel(true)
             .build()
             .also { notificationManager.notify(UPDATE_AVAILABLE_NOTIFICATION_ID, it) }
+
+    }
+
+
+    private fun launchForceUpdateUI() {
+        //Add condition to show the UI only once.
+        val intent = Intent(this, UpdateActivity::class.java)
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        startActivity(intent)
     }
 
     private fun cancelUpdateNotification() {
@@ -146,7 +166,10 @@ open class App : Application(), UpdaterProvider {
     private fun showUpdateCompleteNotification(success: Boolean) {
         val notificationManager = NotificationManagerCompat.from(this)
 
-        NotificationChannelCompat.Builder(UPDATE_AVAILABLE, NotificationManagerCompat.IMPORTANCE_LOW)
+        NotificationChannelCompat.Builder(
+            UPDATE_AVAILABLE,
+            NotificationManagerCompat.IMPORTANCE_LOW
+        )
             .setName(getString(R.string.update_available))
             .setDescription(getString(R.string.update_available))
             .build()

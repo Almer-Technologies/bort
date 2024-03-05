@@ -19,4 +19,6 @@
     <string name="update_failed_content">There was an error while updating your device, make sure it is fully charged and retry.</string>
     <string name="finalizing_the_update">Finalizing the update</string>
     <string name="reboot">Reboot</string>
+    <string name="release_notes">An update needs to be installed for proper functioning of the device. Please ensure good Internet Connectivity</string>
+    <string name="installing_update">The update is now being installed. The Arc will restart automatically.</string>
 </resources>
