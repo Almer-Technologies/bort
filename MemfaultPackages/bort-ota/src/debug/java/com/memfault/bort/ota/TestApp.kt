@@ -144,7 +144,8 @@ class TestApp : App() {
                     context.getSharedPreferences(DEFAULT_STATE_PREFERENCE_FILE, MODE_PRIVATE)
                 ),
                 currentSoftwareVersion = settingsProvider.settings()?.currentVersion
-                    ?: throw IllegalStateException("cannot find current version")
+                    ?: throw IllegalStateException("cannot find current version"),
+                context
             )
         }
     }

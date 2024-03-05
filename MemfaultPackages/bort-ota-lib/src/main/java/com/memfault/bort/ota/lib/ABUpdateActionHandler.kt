@@ -21,6 +21,7 @@ class ABUpdateActionHandler(
     private val rebootDevice: () -> Unit,
     private val cachedOtaProvider: CachedOtaProvider,
     private val currentSoftwareVersion: String,
+    private val context: Context
 ) : UpdateActionHandler {
     init {
         androidUpdateEngine.bind(object : AndroidUpdateEngineCallback {
@@ -95,6 +96,7 @@ class ABUpdateActionHandler(
                     setState(State.CheckingForUpdates)
                     val ota = softwareUpdateChecker.getLatestRelease()
                     if (ota == null) {
+                        context.updater().forceUpdate = false
                         setState(State.Idle)
                         triggerEvent(Event.NoUpdatesAvailable)
                     } else {
@@ -229,5 +231,6 @@ fun realABUpdateActionHandlerFactory(
             context.getSharedPreferences(DEFAULT_STATE_PREFERENCE_FILE, Context.MODE_PRIVATE)
         ),
         currentSoftwareVersion = settings().currentVersion,
+        context
     )
 }

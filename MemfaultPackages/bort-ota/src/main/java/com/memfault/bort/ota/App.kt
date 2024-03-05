@@ -36,8 +36,6 @@ open class App : Application(), UpdaterProvider, Runnable {
 
     override fun run() {
         if (isSetupCompleted) {
-            //Race condition, ota checks would have already happened and failed.
-            clearOTACheckCount()
             checkOta()
         } else {
             handler.postDelayed(this, 10000)
@@ -66,7 +64,6 @@ open class App : Application(), UpdaterProvider, Runnable {
             System.exit(0)
         }
 
-        clearOTACheckCount()
         //Start this one to check if the OTA should be checked.
         if (!isSetupCompleted) {
             handler.postDelayed(this, 10000)
@@ -77,10 +74,7 @@ open class App : Application(), UpdaterProvider, Runnable {
         appStateListenerJob = CoroutineScope(Dispatchers.Main).launch {
             updater().updateState
                 .collect { state ->
-                    //State triggered when there is no OTA after a check.
-                    if (state is State.Idle) {
-                        incrementOTACheckCount();
-                    } else if (state is State.UpdateAvailable && shouldAutoInstallOtaUpdate(
+                    if (state is State.UpdateAvailable && shouldAutoInstallOtaUpdate(
                             state.ota,
                             applicationContext
                         )
@@ -121,26 +115,6 @@ open class App : Application(), UpdaterProvider, Runnable {
                     }
                 }
         }
-    }
-
-    /**
-     * This method is used to track how many times OTA has been checked.
-     * If the count == 0, which means the OTA is checked for first time, we mark it as force ota.
-     * Subsequent ota checks are marked as optional.
-     */
-    private fun incrementOTACheckCount() {
-        var count = getSharedPreferences(ALMER_OTA_PREFS, Context.MODE_PRIVATE).getInt("count", 0);
-        getSharedPreferences(ALMER_OTA_PREFS, Context.MODE_PRIVATE).edit()
-            .putInt("count", (++count)).apply()
-        Log.i("bort-ota-test", "OTA Check count: $count")
-    }
-
-    private val getOTACheckCount: Int
-        get() = getSharedPreferences(ALMER_OTA_PREFS, Context.MODE_PRIVATE).getInt("count", 0)
-
-    private fun clearOTACheckCount() {
-        //Almer: Clear this always on boot before checking the ota
-        getSharedPreferences(ALMER_OTA_PREFS, Context.MODE_PRIVATE).edit().clear().apply()
     }
 
     companion object {
@@ -206,7 +180,7 @@ open class App : Application(), UpdaterProvider, Runnable {
 
 
     private fun launchForceUpdateUI() {
-        if(getOTACheckCount <=1) {
+        if(updater().forceUpdate) {
             val intent = Intent(this, UpdateActivity::class.java)
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             startActivity(intent)
