@@ -3,6 +3,7 @@ package com.memfault.bort.ota.lib
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.provider.Settings
 import androidx.core.content.ContextCompat.startActivity
 import androidx.work.Constraints
 import androidx.work.ExistingPeriodicWorkPolicy
@@ -73,12 +74,15 @@ class BootCompleteReceiver : BroadcastReceiver() {
             }
             updater.setState(State.Idle)
 
-            val updater = context.updater()
-            if (updater.updateState.value.allowsUpdateCheck()) {
-                updater.perform(Action.CheckForUpdate(background = true))
-                // suspend until the check is complete, perform above does not necessarily block depending on
-                // the action handler implementation
-                updater.updateState.first { it != State.CheckingForUpdates }
+            //Check only if user setup is completed.
+            if(Settings.Secure.getInt(context.contentResolver, "user_setup_complete", 0) != 0) {
+                val updater = context.updater()
+                if (updater.updateState.value.allowsUpdateCheck()) {
+                    updater.perform(Action.CheckForUpdate(background = true))
+                    // suspend until the check is complete, perform above does not necessarily block depending on
+                    // the action handler implementation
+                    updater.updateState.first { it != State.CheckingForUpdates }
+                }
             }
         }
     }

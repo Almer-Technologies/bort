@@ -67,7 +67,7 @@ open class App : Application(), UpdaterProvider, Runnable {
         }
 
         clearOTACheckCount()
-        //Start this only if user setup is not completed.
+        //Start this one to check if the OTA should be checked.
         if (!isSetupCompleted) {
             handler.postDelayed(this, 10000)
         }
