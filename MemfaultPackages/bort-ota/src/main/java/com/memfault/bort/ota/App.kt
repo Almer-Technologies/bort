@@ -195,7 +195,7 @@ open class App : Application(), UpdaterProvider, Runnable {
 
     private fun launchForceUpdateUI() {
         var count = getSharedPreferences(ALMER_OTA_PREFS, Context.MODE_PRIVATE).getInt("count", 0);
-        if(count == 0) {
+        if(count == 1) {
             val intent = Intent(this, UpdateActivity::class.java)
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             startActivity(intent)
