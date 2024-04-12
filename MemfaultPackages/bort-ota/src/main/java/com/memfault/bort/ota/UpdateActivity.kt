@@ -230,7 +230,7 @@ class FinalizingUpdateFragment : Fragment() {
     lateinit var progressBar: ProgressBar
 
     override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View? {
-        val layout = inflater.inflate(R.layout.finalizing_update_layout, container, false)
+        val layout = inflater.inflate(R.layout.checking_for_updates_layout, container, false)
         progressBar = layout.findViewById(R.id.progress_bar)
         return layout
     }
