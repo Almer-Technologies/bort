@@ -174,7 +174,7 @@ class CheckingForUpdatesFragment : Fragment() {
             progressBar.max = 100
             progressBar.progress = progress
         }
-        if (this::textView.isInitialized) {
+        if (this::textView.isInitialized && progress >=0) {
             textView.text = getString(R.string.downloading_format, progress)
         }
     }
