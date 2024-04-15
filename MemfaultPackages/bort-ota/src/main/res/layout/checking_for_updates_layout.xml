@@ -42,11 +42,12 @@
         android:indeterminateTint="#00b0b9"
         android:scaleY="1.5" />
     <TextView
+        android:id="@+id/statusTextView"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:gravity="center_horizontal"
         android:textStyle="bold"
-        android:text="Installing…"
+        android:text="Downloading"
         android:textColor="@android:color/white"
         android:textSize="40sp" />
 
