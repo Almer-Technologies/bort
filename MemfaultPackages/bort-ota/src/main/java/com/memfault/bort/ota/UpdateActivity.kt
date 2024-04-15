@@ -158,10 +158,12 @@ class UpdateFailedFragment : Fragment() {
 
 class CheckingForUpdatesFragment : Fragment() {
     lateinit var progressBar: ProgressBar
+    lateinit var textView: TextView
 
     override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View? {
         val layout = inflater.inflate(R.layout.checking_for_updates_layout, container, false)
         progressBar = layout.findViewById(R.id.progress_bar)
+        textView = layout.findViewById(R.id.statusTextView)
         return layout
     }
 
@@ -171,6 +173,9 @@ class CheckingForUpdatesFragment : Fragment() {
             progressBar.min = 0
             progressBar.max = 100
             progressBar.progress = progress
+        }
+        if (this::textView.isInitialized && progress >=0) {
+            textView.text = getString(R.string.downloading_format, progress)
         }
     }
 }
