@@ -1,7 +1,10 @@
 package com.memfault.bort.ota.lib
 
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.content.SharedPreferences
+import android.os.BatteryManager
 import android.os.PowerManager
 import android.os.UpdateEngine
 import android.os.UpdateEngineCallback
@@ -12,6 +15,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
+import java.time.LocalDateTime
+
 
 class ABUpdateActionHandler(
     private val androidUpdateEngine: AndroidUpdateEngine,
@@ -121,12 +126,52 @@ class ABUpdateActionHandler(
                 val ota = cachedOtaProvider.get()
                 if (state is State.RebootNeeded && ota != null) {
                     setState(State.RebootedForInstallation(ota, currentSoftwareVersion))
-                    rebootDevice()
+                    almerRebootDevice()
                 } else {
                     setState(State.Idle)
                 }
             }
             else -> {}
+        }
+    }
+
+    private fun almerRebootDevice() {
+        try {
+            val batteryStatus: Intent? = IntentFilter(Intent.ACTION_BATTERY_CHANGED).let { ifilter ->
+                context.registerReceiver(null, ifilter)
+            }
+
+            val batteryPct: Float? = batteryStatus?.let { intent ->
+                val level: Int = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
+                val scale: Int = intent.getIntExtra(BatteryManager.EXTRA_SCALE, -1)
+                level * 100 / scale.toFloat()
+            }
+
+            val status: Int = batteryStatus?.getIntExtra(BatteryManager.EXTRA_STATUS, -1) ?: -1
+            val isCharging: Boolean = status == BatteryManager.BATTERY_STATUS_CHARGING || status == BatteryManager.BATTERY_STATUS_FULL
+
+            if (!isCharging || batteryPct!! < 60) {
+                Log.i(
+                    "AlmerOTA",
+                    "Skipping auto reboot after OTA as battery status is not as expected. Is Charging: $isCharging, Level: $batteryPct"
+                )
+                return
+            }
+            val now = LocalDateTime.now()
+            val _3am = now.withHour(3).withMinute(0).withSecond(0)
+            val _5am = now.withHour(5).withMinute(0).withSecond(0)
+
+            if (now.isBefore(_3am) || now.isAfter(_5am)) {
+                Log.i("AlmerOTA", "Skiping auto reboot after OTA as time is not between 3am and 5am")
+                return
+            }
+
+            rebootDevice()
+
+
+        } catch (e: Exception) {
+            e.printStackTrace()
+            Log.i("AlmerOTA", "Exception occurred during reboot. Doing nothing")
         }
     }
 }
