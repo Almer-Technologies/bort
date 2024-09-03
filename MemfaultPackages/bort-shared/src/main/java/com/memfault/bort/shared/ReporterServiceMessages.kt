@@ -1,18 +1,19 @@
+@file:Suppress("DEPRECATION")
+
 package com.memfault.bort.shared
 
 import android.os.Bundle
-import android.os.DropBoxManager
 import android.os.Message
 import android.os.ParcelFileDescriptor
 import com.memfault.bort.time.BoxedDuration
 import com.memfault.bort.time.DurationAsMillisecondsLong
 import com.memfault.bort.time.boxed
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.SerializationException
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.days
 import kotlin.time.DurationUnit.MILLISECONDS
 import kotlin.time.toDuration
-import kotlinx.serialization.Serializable
-import kotlinx.serialization.SerializationException
 
 class UnknownMessageException(message: String) : Exception(message)
 class ErrorResponseException(message: String) : Exception(message)
@@ -33,7 +34,17 @@ const val MINIMUM_VALID_VERSION_METRIC_COLLECTION = 6
  */
 const val MINIMUM_VALID_VERSION_FILE_UPLOAD_V2_REPORTER_SETTINGS = 7
 
-val REPORTER_SERVICE_VERSION: Int = MINIMUM_VALID_VERSION_FILE_UPLOAD_V2_REPORTER_SETTINGS
+/**
+ * - Changed interface so that reporter generates pipes, not Bort.
+ */
+const val MINIMUM_VALID_VERSION_REPORTER_CREATES_PIPES = 8
+
+/**
+ * - Changed interface so that reporter generates pipes, not Bort.
+ */
+const val MINIMUM_VALID_VERSION_REMOVED_DROPBOX = 9
+
+val REPORTER_SERVICE_VERSION: Int = MINIMUM_VALID_VERSION_REMOVED_DROPBOX
 
 // Generic responses:
 val ERROR_RSP = -1
@@ -46,18 +57,9 @@ val VERSION_RSP: Int = 2
 val LOG_LEVEL_SET_REQ: Int = 3
 val LOG_LEVEL_SET_RSP: Int = 4
 
-// DropBox related messages:
-val DROPBOX_SET_TAG_FILTER_REQ: Int = 100
-val DROPBOX_SET_TAG_FILTER_RSP: Int = 101
-
-val DROPBOX_GET_NEXT_ENTRY_REQ: Int = 102
-val DROPBOX_GET_NEXT_ENTRY_RSP: Int = 103
-
 // Command Runner messages:
-val RUN_COMMAND_BATTERYSTATS_REQ: Int = 500
 val RUN_COMMAND_LOGCAT_REQ: Int = 501
 val RUN_COMMAND_SLEEP_REQ: Int = 502
-val RUN_COMMAND_PACKAGE_MANAGER_REQ: Int = 503
 val RUN_COMMAND_CONT: Int = 600
 val RUN_COMMAND_RSP: Int = 601
 
@@ -92,17 +94,9 @@ abstract class ReporterServiceMessage : ServiceMessage {
                 LOG_LEVEL_SET_REQ -> SetLogLevelRequest.fromBundle(message.data)
                 LOG_LEVEL_SET_RSP -> SetLogLevelResponse
 
-                DROPBOX_SET_TAG_FILTER_REQ -> DropBoxSetTagFilterRequest.fromBundle(message.data)
-                DROPBOX_SET_TAG_FILTER_RSP -> DropBoxSetTagFilterResponse()
-
-                DROPBOX_GET_NEXT_ENTRY_REQ -> DropBoxGetNextEntryRequest.fromBundle(message.data)
-                DROPBOX_GET_NEXT_ENTRY_RSP -> DropBoxGetNextEntryResponse.fromBundle(message.data)
-
-                RUN_COMMAND_BATTERYSTATS_REQ -> BatteryStatsRequest.fromBundle(message.data)
                 RUN_COMMAND_LOGCAT_REQ -> LogcatRequest.fromBundle(message.data)
                 RUN_COMMAND_SLEEP_REQ -> SleepRequest.fromBundle(message.data)
-                RUN_COMMAND_PACKAGE_MANAGER_REQ -> PackageManagerRequest.fromBundle(message.data)
-                RUN_COMMAND_CONT -> RunCommandContinue()
+                RUN_COMMAND_CONT -> RunCommandContinue.fromBundle(message.data)
                 RUN_COMMAND_RSP -> RunCommandResponse.fromBundle(message.data)
 
                 SEND_FILE_TO_SERVER_REQ -> ServerSendFileRequest.fromBundle(message.data)
@@ -161,57 +155,12 @@ data class SetLogLevelRequest(val level: LogLevel) : ReporterServiceMessage() {
 
     companion object {
         fun fromBundle(bundle: Bundle) = SetLogLevelRequest(
-            LogLevel.fromInt(bundle.getInt(LOG_LEVEL)) ?: LogLevel.NONE
+            LogLevel.fromInt(bundle.getInt(LOG_LEVEL)) ?: LogLevel.NONE,
         )
     }
 }
 
 object SetLogLevelResponse : SimpleReporterServiceMessage(LOG_LEVEL_SET_RSP)
-
-private const val INCLUDED_TAGS = "INCLUDED_TAGS"
-
-data class DropBoxSetTagFilterRequest(val includedTags: List<String>) : ReporterServiceMessage() {
-    override val messageId: Int = DROPBOX_SET_TAG_FILTER_REQ
-    override fun toBundle(): Bundle = Bundle().apply {
-        putStringArray(INCLUDED_TAGS, includedTags.toTypedArray())
-    }
-
-    companion object {
-        fun fromBundle(bundle: Bundle) =
-            DropBoxSetTagFilterRequest(
-                bundle.getStringArray(INCLUDED_TAGS).listify()
-            )
-    }
-}
-
-class DropBoxSetTagFilterResponse : SimpleReporterServiceMessage(DROPBOX_SET_TAG_FILTER_RSP)
-
-private const val LAST = "LAST"
-
-data class DropBoxGetNextEntryRequest(val lastTimeMillis: Long) : ReporterServiceMessage() {
-    override val messageId: Int = DROPBOX_GET_NEXT_ENTRY_REQ
-    override fun toBundle(): Bundle = Bundle().apply {
-        putLong(LAST, lastTimeMillis)
-    }
-
-    companion object {
-        fun fromBundle(bundle: Bundle) = DropBoxGetNextEntryRequest(bundle.getLong(LAST))
-    }
-}
-
-private const val ENTRY = "ENTRY"
-
-data class DropBoxGetNextEntryResponse(val entry: DropBoxManager.Entry?) : ReporterServiceMessage() {
-    override val messageId: Int = DROPBOX_GET_NEXT_ENTRY_RSP
-    override fun toBundle(): Bundle = Bundle().apply {
-        putParcelable(ENTRY, entry)
-    }
-
-    companion object {
-        fun fromBundle(bundle: Bundle) =
-            DropBoxGetNextEntryResponse(bundle.getParcelable(ENTRY))
-    }
-}
 
 private const val COMMAND = "ARGS"
 private const val RUN_OPTS = "RUN_OPTS"
@@ -225,11 +174,32 @@ abstract class RunCommandRequest<C : Command> : ReporterServiceMessage() {
     }
 }
 
+private const val PFD = "PFD"
+
 /**
  * Message that is sent by the ReporterService after the RunCommandRequest command
  * has started executing and Bort can start reading from the read end of the pipe.
  */
-class RunCommandContinue : SimpleReporterServiceMessage(RUN_COMMAND_CONT)
+data class RunCommandContinue(
+    /**
+     * Descriptor to read output from. This is only populated if reporter is running 4.8.0 and above (see
+     * [CommandRunnerMode]).
+     */
+    val pfd: ParcelFileDescriptor?,
+) : ReporterServiceMessage() {
+    override val messageId: Int = RUN_COMMAND_CONT
+    override fun toBundle(): Bundle = Bundle().apply {
+        pfd?.let { putParcelable(PFD, it) }
+    }
+
+    companion object {
+        fun fromBundle(bundle: Bundle) = with(bundle) {
+            RunCommandContinue(
+                getParcelable(PFD),
+            )
+        }
+    }
+}
 
 private const val EXIT_CODE = "EXIT_CODE"
 private const val DID_TIMEOUT = "DID_TIMEOUT"
@@ -245,7 +215,7 @@ data class RunCommandResponse(val exitCode: Int?, val didTimeout: Boolean) : Rep
         fun fromBundle(bundle: Bundle) = with(bundle) {
             RunCommandResponse(
                 getIntOrNull(EXIT_CODE),
-                getBoolean(DID_TIMEOUT)
+                getBoolean(DID_TIMEOUT),
             )
         }
     }
@@ -259,20 +229,6 @@ fun Bundle.getCommandRunnerOptions() =
 fun Bundle.getCommandRunnerCommand() =
     this.getParcelable<Bundle>(COMMAND)
 
-data class BatteryStatsRequest(
-    override val command: BatteryStatsCommand,
-    override val runnerOptions: CommandRunnerOptions,
-) : RunCommandRequest<BatteryStatsCommand>() {
-    override val messageId: Int = RUN_COMMAND_BATTERYSTATS_REQ
-
-    companion object {
-        fun fromBundle(bundle: Bundle) = BatteryStatsRequest(
-            bundle.getCommandRunnerCommand()?.let { BatteryStatsCommand.fromBundle(it) } ?: BatteryStatsCommand(),
-            bundle.getCommandRunnerOptions()
-        )
-    }
-}
-
 data class LogcatRequest(
     override val command: LogcatCommand,
     override val runnerOptions: CommandRunnerOptions,
@@ -282,7 +238,7 @@ data class LogcatRequest(
     companion object {
         fun fromBundle(bundle: Bundle) = LogcatRequest(
             bundle.getCommandRunnerCommand()?.let { LogcatCommand.fromBundle(it) } ?: LogcatCommand(),
-            bundle.getCommandRunnerOptions()
+            bundle.getCommandRunnerOptions(),
         )
     }
 }
@@ -296,25 +252,10 @@ data class SleepRequest(
     companion object {
         fun fromBundle(bundle: Bundle) = SleepRequest(
             bundle.getCommandRunnerCommand()?.let { SleepCommand.fromBundle(it) } ?: SleepCommand(0),
-            bundle.getCommandRunnerOptions()
+            bundle.getCommandRunnerOptions(),
         )
     }
 }
-
-data class PackageManagerRequest(
-    override val command: PackageManagerCommand,
-    override val runnerOptions: CommandRunnerOptions,
-) : RunCommandRequest<PackageManagerCommand>() {
-    override val messageId: Int = RUN_COMMAND_PACKAGE_MANAGER_REQ
-
-    companion object {
-        fun fromBundle(bundle: Bundle) = PackageManagerRequest(
-            bundle.getCommandRunnerCommand()?.let { PackageManagerCommand.fromBundle(it) } ?: PackageManagerCommand(),
-            bundle.getCommandRunnerOptions()
-        )
-    }
-}
-
 private const val ERROR_MESSAGE = "MSG"
 
 data class ErrorResponse(val error: String?) : ReporterServiceMessage() {
@@ -349,7 +290,7 @@ data class ServerSendFileRequest(
                 bundle.getString(DROPBOX_TAG)
                     ?: throw IllegalArgumentException("ServerSendFileRequest: missing $DROPBOX_TAG"),
                 bundle.getParcelable(FILE_DESCRIPTOR)
-                    ?: throw IllegalArgumentException("ServerSendFileRequest: missing $FILE_DESCRIPTOR")
+                    ?: throw IllegalArgumentException("ServerSendFileRequest: missing $FILE_DESCRIPTOR"),
             )
     }
 }
@@ -366,7 +307,7 @@ data class SetMetricCollectionIntervalRequest(val interval: Duration) : Reporter
 
     companion object {
         fun fromBundle(bundle: Bundle) = SetMetricCollectionIntervalRequest(
-            bundle.getLong(METRIC_COLLECTION_INTERVAL).toDuration(MILLISECONDS)
+            bundle.getLong(METRIC_COLLECTION_INTERVAL).toDuration(MILLISECONDS),
         )
     }
 }

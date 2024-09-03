@@ -6,16 +6,16 @@ import io.mockk.every
 import io.mockk.mockk
 import io.mockk.spyk
 import io.mockk.verify
-import java.io.ByteArrayOutputStream
-import java.io.IOException
-import java.io.OutputStream
-import java.util.concurrent.CancellationException
-import kotlin.time.Duration.Companion.milliseconds
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
+import java.io.IOException
+import java.io.OutputStream
+import java.util.concurrent.CancellationException
+import kotlin.text.Charsets.UTF_8
+import kotlin.time.Duration.Companion.milliseconds
 
 val TRUE_COMMAND = listOf("true")
 val ECHO_COMMAND = listOf("echo", "hello")
@@ -24,13 +24,23 @@ val SLEEP_COMMAND = listOf("sleep", "100")
 val YES_COMMAND = listOf("yes")
 
 class CommandRunnerTest {
-    lateinit var outputStreamFactoryMock: (ParcelFileDescriptor) -> OutputStream
-    lateinit var outputStreamMock: ByteArrayOutputStream
-    lateinit var reportResultMock: CommandRunnerReportResult
+    private lateinit var outputStreamFactoryMock: (ParcelFileDescriptor) -> OutputStream
+    private lateinit var outputStreamMock: MockOutputStream
+    private lateinit var reportResultMock: CommandRunnerReportResult
+
+    private class MockOutputStream : OutputStream() {
+        private val written = mutableListOf<Byte>()
+
+        fun toUtf8String() = written.toByteArray().toString(UTF_8)
+
+        override fun write(b: Int) {
+            written.add(b.toByte())
+        }
+    }
 
     @BeforeEach
     fun setUp() {
-        outputStreamMock = spyk(ByteArrayOutputStream(1024))
+        outputStreamMock = spyk(MockOutputStream())
         outputStreamFactoryMock = mockk()
         reportResultMock = mockk(name = "reportResult", relaxed = true)
         every { outputStreamFactoryMock(any()) } answers { outputStreamMock }
@@ -42,7 +52,7 @@ class CommandRunnerTest {
             TRUE_COMMAND,
             CommandRunnerOptions(outFd = null),
             reportResultMock,
-            outputStreamFactoryMock
+            outputStreamFactoryMock,
         ).apply { run() }
         assertEquals(cmd.process, null)
         verify(exactly = 1) { reportResultMock(null, false) }
@@ -56,13 +66,13 @@ class CommandRunnerTest {
             ECHO_COMMAND,
             CommandRunnerOptions(outFd = outFd),
             reportResultMock,
-            outputStreamFactoryMock
+            outputStreamFactoryMock,
         ).apply { run() }
         assertNotNull(cmd.process)
         verify(exactly = 1) { outputStreamFactoryMock.invoke(outFd) }
         verify(exactly = 1) { outputStreamMock.close() }
         verify(exactly = 1) { reportResultMock(0, false) }
-        assertEquals("hello\n", outputStreamMock.toString("utf8"))
+        assertEquals("hello\n", outputStreamMock.toUtf8String())
     }
 
     @Test
@@ -72,12 +82,12 @@ class CommandRunnerTest {
             NON_EXISTENT_COMMAND,
             CommandRunnerOptions(outFd = outFd),
             reportResultMock,
-            outputStreamFactoryMock
+            outputStreamFactoryMock,
         ).apply { run() }
         verify(exactly = 1) { outputStreamMock.close() }
         verify(exactly = 1) { reportResultMock(null, false) }
         assertEquals(cmd.process, null)
-        assertEquals("", outputStreamMock.toString("utf8"))
+        assertEquals("", outputStreamMock.toUtf8String())
     }
 
     @Test
@@ -90,7 +100,7 @@ class CommandRunnerTest {
             YES_COMMAND,
             CommandRunnerOptions(outFd = outFd),
             reportResultMock,
-            outputStreamFactoryMock
+            outputStreamFactoryMock,
         ).apply { run() }
         assertNotNull(cmd.process)
         cmd.process?.let {
@@ -108,7 +118,7 @@ class CommandRunnerTest {
             SLEEP_COMMAND,
             CommandRunnerOptions(outFd = outFd),
             reportResultMock,
-            outputStreamFactoryMock
+            outputStreamFactoryMock,
         )
         val future = executor.submitWithTimeout(cmd, 10.milliseconds)
         assertThrows<CancellationException> {

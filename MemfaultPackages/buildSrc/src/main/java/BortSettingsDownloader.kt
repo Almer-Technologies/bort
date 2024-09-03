@@ -80,12 +80,7 @@ private fun generateDevConfig(
                        "default_period_ms": 1800000,
                        "max_buckets": 1
                    },
-                   "data_scrubbing.rules": [
-                       {"app_id_pattern": "com.memfault.*", "type": "android_app_id"},
-                       {"app_id_pattern": "com.yolo.*", "type": "android_app_id"},
-                       {"type": "text_email"},
-                       {"type": "text_credential"}
-                   ],
+                   "data_scrubbing.rules": [],
                    "device_info.android_build_version_key" : "${getDefaultProperty("ANDROID_BUILD_VERSION_KEY") ?: "ro.build.date.utc"}",
                    "device_info.android_build_version_source" : "${getDefaultProperty("ANDROID_BUILD_VERSION_SOURCE") ?: "build_fingerprint_and_system_property"}",
                    "device_info.android_device_serial_key" : "${getDefaultProperty("ANDROID_DEVICE_SERIAL_KEY") ?: "ro.serialno"}",
@@ -95,7 +90,7 @@ private fun generateDevConfig(
                        "default_period_ms": 900000,
                        "max_buckets": 1
                    },
-                   "drop_box.data_source_enabled" : ${getDefaultProperty("DATA_SOURCE_CALIPER_DROP_BOX_TRACES_ENABLED")?.toBoolean() ?: true},
+                   "drop_box.data_source_enabled" : true,
                    "drop_box.excluded_tags": [],
                    "drop_box.java_exceptions.rate_limiting_settings": {
                        "default_capacity": 4,
@@ -121,7 +116,6 @@ private fun generateDevConfig(
                    "file_upload_holding_area.trailing_margin_ms": 300000,
                    "http_api.device_base_url" : "${getDefaultProperty("MEMFAULT_API_BASE_URL") ?: "https://device.memfault.com"}",
                    "http_api.files_base_url" : "${getDefaultProperty("MEMFAULT_FILES_BASE_URL") ?: "https://files.memfault.com"}",
-                   "http_api.ingress_base_url" : "${getDefaultProperty("MEMFAULT_INGRESS_BASE_URL") ?: "https://ingress.memfault.com"}",
                    "http_api.upload_compression_enabled" : true,
                    "http_api.upload_network_constraint_allow_metered_connection" : true,
                    "http_api.connect_timeout_ms": 30000,

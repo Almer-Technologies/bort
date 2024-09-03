@@ -2,12 +2,12 @@ package com.memfault.bort.requester
 
 import android.app.Application
 import android.content.Context
-import androidx.preference.PreferenceManager
-import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.ExistingPeriodicWorkPolicy.CANCEL_AND_REENQUEUE
+import androidx.work.ExistingPeriodicWorkPolicy.UPDATE
 import androidx.work.WorkManager
 import androidx.work.workDataOf
+import com.memfault.bort.metrics.LastHeartbeatEndTimeProvider
 import com.memfault.bort.metrics.MetricsCollectionTask
-import com.memfault.bort.metrics.RealLastHeartbeatEndTimeProvider
 import com.memfault.bort.periodicWorkRequest
 import com.memfault.bort.settings.MetricsSettings
 import com.memfault.bort.settings.SettingsProvider
@@ -28,19 +28,19 @@ private val MINIMUM_COLLECTION_INTERVAL = 15.minutes
 
 internal fun restartPeriodicMetricsCollection(
     context: Context,
+    lastHeartbeatEndTimeProvider: LastHeartbeatEndTimeProvider,
     collectionInterval: Duration,
     lastHeartbeatEnd: BootRelativeTime? = null,
     collectImmediately: Boolean = false,
+    cancel: Boolean,
 ) {
     lastHeartbeatEnd?.let {
-        RealLastHeartbeatEndTimeProvider(
-            PreferenceManager.getDefaultSharedPreferences(context)
-        ).lastEnd = lastHeartbeatEnd
+        lastHeartbeatEndTimeProvider.lastEnd = lastHeartbeatEnd
     }
 
     periodicWorkRequest<MetricsCollectionTask>(
         collectionInterval,
-        workDataOf()
+        workDataOf(),
     ) {
         addTag(WORK_TAG)
         if (!collectImmediately) {
@@ -50,8 +50,8 @@ internal fun restartPeriodicMetricsCollection(
         WorkManager.getInstance(context)
             .enqueueUniquePeriodicWork(
                 WORK_UNIQUE_NAME_PERIODIC,
-                ExistingPeriodicWorkPolicy.UPDATE,
-                workRequest
+                if (cancel) CANCEL_AND_REENQUEUE else UPDATE,
+                workRequest,
             )
     }
 }
@@ -59,22 +59,31 @@ internal fun restartPeriodicMetricsCollection(
 @ContributesMultibinding(SingletonComponent::class)
 class MetricsCollectionRequester @Inject constructor(
     private val application: Application,
+    private val lastHeartbeatEndTimeProvider: LastHeartbeatEndTimeProvider,
     private val metricsSettings: MetricsSettings,
     private val bootRelativeTimeProvider: BootRelativeTimeProvider,
 ) : PeriodicWorkRequester() {
-    override suspend fun startPeriodic(justBooted: Boolean, settingsChanged: Boolean) {
+    override suspend fun startPeriodic(
+        justBooted: Boolean,
+        settingsChanged: Boolean,
+    ) {
         restartPeriodicCollection(resetLastHeartbeatTime = justBooted, collectImmediately = false)
     }
 
-    fun restartPeriodicCollection(resetLastHeartbeatTime: Boolean, collectImmediately: Boolean) {
+    fun restartPeriodicCollection(
+        resetLastHeartbeatTime: Boolean,
+        collectImmediately: Boolean,
+    ) {
         val collectionInterval = maxOf(MINIMUM_COLLECTION_INTERVAL, metricsSettings.collectionInterval)
         Logger.test("Collecting metrics every ${collectionInterval.toDouble(DurationUnit.MINUTES)} minutes")
 
         restartPeriodicMetricsCollection(
             context = application,
+            lastHeartbeatEndTimeProvider = lastHeartbeatEndTimeProvider,
             collectionInterval = collectionInterval,
             lastHeartbeatEnd = if (resetLastHeartbeatTime) bootRelativeTimeProvider.now() else null,
             collectImmediately = collectImmediately,
+            cancel = true,
         )
     }
 
@@ -88,6 +97,15 @@ class MetricsCollectionRequester @Inject constructor(
         return settings.metricsSettings.dataSourceEnabled
     }
 
-    override suspend fun parametersChanged(old: SettingsProvider, new: SettingsProvider): Boolean =
+    override suspend fun diagnostics(): BortWorkInfo {
+        return WorkManager.getInstance(application)
+            .getWorkInfosForUniqueWorkFlow(WORK_UNIQUE_NAME_PERIODIC)
+            .asBortWorkInfo("metrics")
+    }
+
+    override suspend fun parametersChanged(
+        old: SettingsProvider,
+        new: SettingsProvider,
+    ): Boolean =
         old.metricsSettings.collectionInterval != new.metricsSettings.collectionInterval
 }

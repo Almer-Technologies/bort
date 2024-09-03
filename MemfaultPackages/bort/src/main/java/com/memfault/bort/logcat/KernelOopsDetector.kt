@@ -6,18 +6,19 @@ import com.memfault.bort.time.BaseAbsoluteTime
 import com.memfault.bort.tokenbucket.KernelOops
 import com.memfault.bort.tokenbucket.TokenBucketStore
 import com.memfault.bort.uploader.HandleEventOfInterest
+import java.time.Instant
 import javax.inject.Inject
 
 private const val OOPS_TOKEN_START = "------------[ cut here ]------------"
 
 interface LogcatLineProcessor {
     fun process(line: LogcatLine)
-    fun finish(lastLogTime: BaseAbsoluteTime): Boolean
+    suspend fun finish(lastLogTime: BaseAbsoluteTime): Boolean
 }
 
 object NoopLogcatLineProcessor : LogcatLineProcessor {
     override fun process(line: LogcatLine) {}
-    override fun finish(lastLogTime: BaseAbsoluteTime) = false
+    override suspend fun finish(lastLogTime: BaseAbsoluteTime) = false
 }
 
 class KernelOopsDetector @Inject constructor(
@@ -25,6 +26,8 @@ class KernelOopsDetector @Inject constructor(
     private val handleEventOfInterest: HandleEventOfInterest,
 ) : LogcatLineProcessor {
     @VisibleForTesting var foundOops: Boolean = false
+
+    @VisibleForTesting var oopsTimestamp: Instant? = null
 
     /**
      * Called for every logcat line, including separators
@@ -34,12 +37,13 @@ class KernelOopsDetector @Inject constructor(
         if (line.buffer != "kernel") return
         if (line.message != OOPS_TOKEN_START) return
         foundOops = true
+        oopsTimestamp = line.logTime
     }
 
     /**
      * Called at the end of processing a logcat file
      */
-    override fun finish(lastLogTime: BaseAbsoluteTime): Boolean {
+    override suspend fun finish(lastLogTime: BaseAbsoluteTime): Boolean {
         if (!foundOops) return false
         if (!tokenBucketStore.takeSimple(tag = "oops")) return false
         handleEventOfInterest.handleEventOfInterest(lastLogTime)

@@ -1,19 +1,18 @@
 package com.memfault.bort.metrics
 
 import com.memfault.bort.PackageManagerClient
+import com.memfault.bort.regex.toGlobRegex
 import com.memfault.bort.settings.MetricsSettings
-import com.memfault.bort.toGlobRegex
 import javax.inject.Inject
 
 /**
  * Collects system properties of interest, and passes them on to the device properties database.
  */
 class AppVersionsCollector @Inject constructor(
-    private val devicePropertiesStore: DevicePropertiesStore,
     private val metricsSettings: MetricsSettings,
     private val packageManagerClient: PackageManagerClient,
 ) {
-    suspend fun updateAppVersions() {
+    suspend fun updateAppVersions(devicePropertiesStore: DevicePropertiesStore) {
         val packages = metricsSettings.appVersions
         if (packages.isEmpty()) return
         val appVersions = packageManagerClient.getPackageManagerReport()

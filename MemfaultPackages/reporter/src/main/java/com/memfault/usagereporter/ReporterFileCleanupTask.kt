@@ -7,10 +7,12 @@ import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
+import com.memfault.bort.reporting.NumericAgg
 import com.memfault.bort.reporting.Reporting
 import com.memfault.bort.requester.cleanupFiles
 import com.memfault.bort.requester.directorySize
 import com.memfault.bort.shared.Logger
+import com.memfault.bort.shared.NoOpJobReporter
 import com.memfault.bort.shared.runAndTrackExceptions
 import com.memfault.usagereporter.clientserver.RealSendfileQueue
 import com.memfault.usagereporter.clientserver.clientServerUploadsDir
@@ -27,19 +29,20 @@ class ReporterFileCleanupTask
     private val reporterSettings: ReporterSettingsPreferenceProvider,
 ) : CoroutineWorker(appContext, workerParams) {
 
-    override suspend fun doWork(): Result = runAndTrackExceptions(jobName = "ReporterFileCleanupTask") {
-        cleanupCacheDir()
-        RealSendfileQueue.cleanup(clientServerUploadsDir(appContext), reporterSettings)
-        Result.success()
-    }
+    override suspend fun doWork(): Result =
+        runAndTrackExceptions(jobName = "ReporterFileCleanupTask", NoOpJobReporter) {
+            cleanupCacheDir()
+            RealSendfileQueue.cleanup(clientServerUploadsDir(appContext), reporterSettings)
+            Result.success()
+        }
 
     private fun cleanupCacheDir() {
         val tempDir = appContext.cacheDir
-        reporterTempStorageUsedMetric.update(tempDir.directorySize())
+        reporterTempStorageUsedMetric.record(tempDir.directorySize())
         val result = cleanupFiles(
             dir = tempDir,
             maxDirStorageBytes = reporterSettings.maxReporterTempStorageBytes,
-            maxFileAge = reporterSettings.maxReporterTempStorageAge
+            maxFileAge = reporterSettings.maxReporterTempStorageAge,
         )
         val deleted = result.deletedForStorageCount + result.deletedForAgeCount
         if (deleted > 0) {
@@ -55,8 +58,9 @@ class ReporterFileCleanupTask
             name = "reporter_temp_deleted",
             internal = true,
         )
-        private val reporterTempStorageUsedMetric = Reporting.report().numberProperty(
+        private val reporterTempStorageUsedMetric = Reporting.report().distribution(
             name = "reporter_temp_storage_bytes",
+            aggregations = listOf(NumericAgg.LATEST_VALUE),
             internal = true,
         )
 

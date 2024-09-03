@@ -3,14 +3,14 @@ package com.memfault.bort.time
 import android.content.ContentResolver
 import android.os.SystemClock
 import android.provider.Settings
-import com.memfault.bort.LinuxBootId
+import com.memfault.bort.boot.LinuxBootId
 import com.squareup.anvil.annotations.ContributesBinding
 import dagger.hilt.components.SingletonComponent
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
 import java.time.Instant
 import javax.inject.Inject
 import kotlin.time.Duration.Companion.milliseconds
-import kotlinx.serialization.SerialName
-import kotlinx.serialization.Serializable
 
 /**
  * Combination of absolute- and boot-relative time for the same instant.

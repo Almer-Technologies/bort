@@ -2,23 +2,10 @@ package com.memfault.bort.dropbox
 
 import android.os.DropBoxManager
 import android.os.RemoteException
-import com.github.michaelbull.result.Result
-import com.memfault.bort.ReporterClient
-import com.memfault.bort.ReporterServiceConnection
-import com.memfault.bort.ReporterServiceConnector
 import com.memfault.bort.TaskResult
-import com.memfault.bort.createMockServiceConnector
+import com.memfault.bort.metrics.CrashHandler
 import com.memfault.bort.settings.DropBoxSettings
 import com.memfault.bort.settings.RateLimitingSettings
-import com.memfault.bort.shared.DropBoxGetNextEntryRequest
-import com.memfault.bort.shared.DropBoxGetNextEntryResponse
-import com.memfault.bort.shared.DropBoxSetTagFilterRequest
-import com.memfault.bort.shared.DropBoxSetTagFilterResponse
-import com.memfault.bort.shared.ErrorResponseException
-import com.memfault.bort.shared.VersionRequest
-import com.memfault.bort.shared.VersionResponse
-import com.memfault.bort.shared.result.failure
-import com.memfault.bort.shared.result.success
 import com.memfault.bort.time.boxed
 import io.mockk.MockKAnnotations
 import io.mockk.coEvery
@@ -28,28 +15,28 @@ import io.mockk.impl.annotations.RelaxedMockK
 import io.mockk.mockk
 import io.mockk.unmockkAll
 import io.mockk.verify
-import kotlin.time.Duration.Companion.minutes
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
-
-private const val TEST_SERVICE_VERSION = 3
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.minutes
 
 class DropBoxGetEntriesTaskTest {
-    lateinit var mockServiceConnection: ReporterServiceConnection
-    lateinit var mockServiceConnector: ReporterServiceConnector
-
     @RelaxedMockK
-    lateinit var mockEntryProcessor: EntryProcessor
-    lateinit var task: DropBoxGetEntriesTask
-    lateinit var lastProcessedEntryProvider: FakeLastProcessedEntryProvider
-    lateinit var pendingTimeChangeProvider: DropBoxPendingTimeChangeProvider
-    var mockGetExcludedTags: Set<String> = setOf()
-    lateinit var processedEntryCursorProvider: ProcessedEntryCursorProvider
-    lateinit var retryDelay: suspend () -> Unit
-    lateinit var entryProcessors: DropBoxEntryProcessors
+    private lateinit var mockEntryProcessor: EntryProcessor
+    private lateinit var task: DropBoxGetEntriesTask
+    private lateinit var lastProcessedEntryProvider: FakeLastProcessedEntryProvider
+    private lateinit var pendingTimeChangeProvider: DropBoxPendingTimeChangeProvider
+    private lateinit var processedEntryCursorProvider: ProcessedEntryCursorProvider
+    private lateinit var retryDelay: suspend () -> Unit
+    private lateinit var entryProcessors: DropBoxEntryProcessors
+    private lateinit var dropBoxManager: DropBoxManager
+    private lateinit var crashHandler: CrashHandler
+    private val dropBoxFilters = object : DropBoxFilters {
+        override fun tagFilter(): List<String> = listOf(TEST_TAG)
+    }
 
     private val mockRateLimitingSettings = RateLimitingSettings(
         defaultCapacity = 10,
@@ -69,23 +56,16 @@ class DropBoxGetEntriesTaskTest {
         override val metricReportRateLimitingSettings = mockRateLimitingSettings
         override val marFileRateLimitingSettings = mockRateLimitingSettings
         override val continuousLogFileRateLimitingSettings = mockRateLimitingSettings
-        override val excludedTags get() = mockGetExcludedTags
+        override val excludedTags get() = emptySet<String>()
+        override val forceEnableWtfTags: Boolean = true
         override val scrubTombstones: Boolean = false
+        override val processImmediately: Boolean = true
+        override val pollingInterval: Duration = 15.minutes
     }
 
     @BeforeEach
     fun setUp() {
         MockKAnnotations.init(this)
-        mockServiceConnection = mockk {
-            coEvery {
-                sendAndReceive(ofType(DropBoxSetTagFilterRequest::class))
-            } returns Result.success(DropBoxSetTagFilterResponse())
-            coEvery {
-                sendAndReceive(ofType(VersionRequest::class))
-            } returns Result.success(VersionResponse(TEST_SERVICE_VERSION))
-        }
-        val reporterClient = ReporterClient(mockServiceConnection, mockk())
-        mockServiceConnector = createMockServiceConnector(reporterClient)
         lastProcessedEntryProvider = FakeLastProcessedEntryProvider(0)
         pendingTimeChangeProvider = FakeDropBoxPendingTimeChangeProvider(false)
         processedEntryCursorProvider = ProcessedEntryCursorProvider(
@@ -96,13 +76,18 @@ class DropBoxGetEntriesTaskTest {
             TEST_TAG to mockEntryProcessor,
             TEST_TAG_TO_IGNORE to mockEntryProcessor,
         )
+        dropBoxManager = mockk()
+        crashHandler = mockk(relaxed = true)
         task = DropBoxGetEntriesTask(
-            reporterServiceConnector = mockServiceConnector,
             cursorProvider = processedEntryCursorProvider,
             entryProcessors = entryProcessors,
             settings = mockDropboxSettings,
             retryDelay = { retryDelay() },
             metrics = mockk(relaxed = true),
+            dropBoxManager = { dropBoxManager },
+            dropBoxFilters = dropBoxFilters,
+            processingMutex = DropboxProcessingMutex(),
+            crashHandler = crashHandler,
         )
         retryDelay = suspend { }
     }
@@ -112,11 +97,10 @@ class DropBoxGetEntriesTaskTest {
         unmockkAll()
     }
 
-    private fun mockGetNextEntryReponses(vararg entries: DropBoxManager.Entry?): () -> Unit {
+    private fun mockGetNextEntryResponses(vararg entries: DropBoxManager.Entry?): () -> Unit {
         coEvery {
-            mockServiceConnection.sendAndReceive(ofType(DropBoxGetNextEntryRequest::class))
-        } returnsMany
-            entries.map { Result.success(DropBoxGetNextEntryResponse(it)) }
+            dropBoxManager.getNextEntry(any(), any())
+        } returnsMany entries.toList()
 
         return {
             entries.forEach {
@@ -126,48 +110,29 @@ class DropBoxGetEntriesTaskTest {
     }
 
     @Test
-    fun failsTaskUponRemoteException() {
-        coEvery { mockServiceConnection.sendAndReceive(any()) } throws RemoteException("Boom!")
+    fun failsTaskUponRemoteException() = runTest {
+        coEvery { dropBoxManager.getNextEntry(any(), any()) } throws RemoteException("Boom!")
 
-        val result = runBlocking {
-            task.doWork()
-        }
-        coVerify(exactly = 1) { mockServiceConnection.sendAndReceive(any()) }
+        val result = task.doWork()
+        coVerify(exactly = 1) { dropBoxManager.getNextEntry(any(), any()) }
         assertEquals(TaskResult.FAILURE, result)
     }
 
     @Test
-    fun failsTaskIfGetNextEntryFails() {
-        coEvery {
-            mockServiceConnection.sendAndReceive(ofType(DropBoxGetNextEntryRequest::class))
-        } returns Result.failure(ErrorResponseException("Can't do!"))
+    fun retriesOnceMoreAfterNullEntry() = runTest {
+        mockGetNextEntryResponses(null)
 
-        val result = runBlocking {
-            task.doWork()
-        }
-        coVerify(exactly = 1) {
-            mockServiceConnection.sendAndReceive(ofType(DropBoxGetNextEntryRequest::class))
-        }
-        assertEquals(TaskResult.FAILURE, result)
-    }
-
-    @Test
-    fun retriesOnceMoreAfterNullEntry() {
-        mockGetNextEntryReponses(null)
-
-        val result = runBlocking {
-            task.doWork()
-        }
+        val result = task.doWork()
 
         coVerify(exactly = 2) {
-            mockServiceConnection.sendAndReceive(ofType(DropBoxGetNextEntryRequest::class))
+            dropBoxManager.getNextEntry(any(), any())
         }
         assertEquals(TaskResult.SUCCESS, result)
     }
 
     @Test
-    fun refreshesCursorBeforeRetryAfterNullEntry() {
-        mockGetNextEntryReponses(null)
+    fun refreshesCursorBeforeRetryAfterNullEntry() = runTest {
+        mockGetNextEntryResponses(null)
 
         // Simulate that a time adjustment took place while waiting for the retry delay to pass:
         val changedTimeMillis = 12345L
@@ -175,32 +140,28 @@ class DropBoxGetEntriesTaskTest {
             processedEntryCursorProvider.makeCursor().next(changedTimeMillis)
         }
 
-        val result = runBlocking {
-            task.doWork()
-        }
+        val result = task.doWork()
 
         coVerify {
-            mockServiceConnection.sendAndReceive(DropBoxGetNextEntryRequest(lastTimeMillis = 0))
-            mockServiceConnection.sendAndReceive(DropBoxGetNextEntryRequest(lastTimeMillis = changedTimeMillis))
+            dropBoxManager.getNextEntry(null, 0)
+            dropBoxManager.getNextEntry(null, changedTimeMillis)
         }
         assertEquals(TaskResult.SUCCESS, result)
     }
 
     @Test
-    fun ignoreEntryProcessorExceptions() {
-        val verifyCloseCalled = mockGetNextEntryReponses(
+    fun ignoreEntryProcessorExceptions() = runTest {
+        val verifyCloseCalled = mockGetNextEntryResponses(
             mockEntry(10),
             mockEntry(20),
-            null
+            null,
         )
         coEvery { mockEntryProcessor.process(any()) } throws Exception("Processing failed!")
 
-        val result = runBlocking {
-            task.doWork()
-        }
+        val result = task.doWork()
 
         coVerify(exactly = 4) {
-            mockServiceConnection.sendAndReceive(ofType(DropBoxGetNextEntryRequest::class))
+            dropBoxManager.getNextEntry(any(), any())
         }
         coVerify(exactly = 2) {
             mockEntryProcessor.process(any())
@@ -211,17 +172,15 @@ class DropBoxGetEntriesTaskTest {
     }
 
     @Test
-    fun ignoreEntryTagWithNoMatchingProcessor() {
-        val verifyCloseCalled = mockGetNextEntryReponses(
+    fun ignoreEntryTagWithNoMatchingProcessor() = runTest {
+        val verifyCloseCalled = mockGetNextEntryResponses(
             mockEntry(10, tag_ = "unknown"),
-            null
+            null,
         )
-        val result = runBlocking {
-            task.doWork()
-        }
+        val result = task.doWork()
 
         coVerify(exactly = 3) {
-            mockServiceConnection.sendAndReceive(ofType(DropBoxGetNextEntryRequest::class))
+            dropBoxManager.getNextEntry(any(), any())
         }
         coVerify(exactly = 0) {
             mockEntryProcessor.process(any())
@@ -232,12 +191,10 @@ class DropBoxGetEntriesTaskTest {
     }
 
     @Test
-    fun ignoreEmptyEntry() {
+    fun ignoreEmptyEntry() = runTest {
         val entry = mockEntry(10, tag_ = TEST_TAG)
-        val verifyCloseCalled = mockGetNextEntryReponses(entry, null)
-        val result = runBlocking {
-            task.doWork()
-        }
+        val verifyCloseCalled = mockGetNextEntryResponses(entry, null)
+        val result = task.doWork()
 
         coVerify(exactly = 1) {
             mockEntryProcessor.process(any())
@@ -247,30 +204,28 @@ class DropBoxGetEntriesTaskTest {
         verifyCloseCalled()
     }
 
-    private fun runAndAssertNoop() {
-        val result = runBlocking {
-            task.doWork()
-        }
+    private fun runAndAssertNoop() = runTest {
+        val result = task.doWork()
         assertEquals(TaskResult.SUCCESS, result)
 
         // There was nothing to do, so it must not connect to the reporter service at all:
         coVerify(exactly = 0) {
-            mockServiceConnector.connect(any())
-        }
-        coVerify(exactly = 0) {
-            mockServiceConnection.sendAndReceive(any())
+            dropBoxManager.getNextEntry(any(), any())
         }
     }
 
     @Test
     fun emptyEntryProcessorsMap() {
         task = DropBoxGetEntriesTask(
-            reporterServiceConnector = mockServiceConnector,
             cursorProvider = processedEntryCursorProvider,
             entryProcessors = mapOfProcessors(),
             settings = mockDropboxSettings,
             retryDelay = { retryDelay() },
             metrics = mockk(relaxed = true),
+            dropBoxManager = { dropBoxManager },
+            dropBoxFilters = dropBoxFilters,
+            processingMutex = DropboxProcessingMutex(),
+            crashHandler = crashHandler,
         )
         runAndAssertNoop()
     }
@@ -278,7 +233,6 @@ class DropBoxGetEntriesTaskTest {
     @Test
     fun dataSourceDisabled() {
         task = DropBoxGetEntriesTask(
-            reporterServiceConnector = mockServiceConnector,
             cursorProvider = processedEntryCursorProvider,
             entryProcessors = mapOfProcessors(TEST_TAG to mockEntryProcessor),
             settings = object : DropBoxSettings by mockDropboxSettings {
@@ -286,6 +240,10 @@ class DropBoxGetEntriesTaskTest {
             },
             retryDelay = { retryDelay() },
             metrics = mockk(relaxed = true),
+            dropBoxManager = { dropBoxManager },
+            dropBoxFilters = dropBoxFilters,
+            processingMutex = DropboxProcessingMutex(),
+            crashHandler = crashHandler,
         )
         runAndAssertNoop()
     }

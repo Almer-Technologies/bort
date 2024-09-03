@@ -45,6 +45,10 @@ LOCAL_SRC_FILES := $(LOCAL_MODULE).apk
 LOCAL_REPLACE_PREBUILT_APK_INSTALLED := $(LOCAL_PATH)/$(LOCAL_MODULE).apk
 LOCAL_MODULE_CLASS := APPS
 LOCAL_MODULE_SUFFIX := $(COMMON_ANDROID_PACKAGE_SUFFIX)
+# Android 12 and above needs us to list any merged manifest <uses-library> entries.
+ifeq ($(shell test $(PLATFORM_SDK_VERSION) -ge 31 && echo true),true)
+LOCAL_OPTIONAL_USES_LIBRARIES := androidx.window.extensions androidx.window.sidecar
+endif
 
 LOCAL_PACKAGE_NAME := MemfaultBort
 LOCAL_CERTIFICATE := PRESIGNED
@@ -76,6 +80,10 @@ LOCAL_SRC_FILES := $(LOCAL_MODULE).apk
 LOCAL_REPLACE_PREBUILT_APK_INSTALLED := $(LOCAL_PATH)/$(LOCAL_MODULE).apk
 LOCAL_MODULE_CLASS := APPS
 LOCAL_MODULE_SUFFIX := $(COMMON_ANDROID_PACKAGE_SUFFIX)
+# Android 12 and above needs us to list any merged manifest <uses-library> entries.
+ifeq ($(shell test $(PLATFORM_SDK_VERSION) -ge 31 && echo true),true)
+LOCAL_OPTIONAL_USES_LIBRARIES := androidx.window.extensions androidx.window.sidecar
+endif
 
 LOCAL_PACKAGE_NAME := MemfaultBortOta
 LOCAL_CERTIFICATE := PRESIGNED
@@ -106,6 +114,10 @@ LOCAL_MODULE := MemfaultUsageReporter
 LOCAL_SRC_FILES := $(LOCAL_MODULE).apk
 LOCAL_MODULE_CLASS := APPS
 LOCAL_MODULE_SUFFIX := $(COMMON_ANDROID_PACKAGE_SUFFIX)
+# Android 12 and above needs us to list any merged manifest <uses-library> entries.
+ifeq ($(shell test $(PLATFORM_SDK_VERSION) -ge 31 && echo true),true)
+LOCAL_OPTIONAL_USES_LIBRARIES := androidx.window.extensions androidx.window.sidecar
+endif
 
 LOCAL_PACKAGE_NAME := MemfaultUsageReporter
 LOCAL_CERTIFICATE := platform
@@ -116,4 +128,4 @@ LOCAL_REQUIRED_MODULES := com.memfault.usagereporter.xml
 TARGET_OUT_DATA_APPS_PRIVILEGED := $(TARGET_OUT_DATA)/priv-app
 include $(BUILD_PREBUILT)
 
-include $(LOCAL_PATH)/reporting-lib/Android.mk
+include $(LOCAL_PATH)/reporting-libs/reporting-lib-java/Android.mk

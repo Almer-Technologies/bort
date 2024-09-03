@@ -2,17 +2,24 @@ package com.memfault.bort
 
 import android.app.Application
 import android.content.Context
+import android.content.SharedPreferences
 import android.content.res.Resources
+import androidx.preference.PreferenceManager
+import com.memfault.bort.dagger.InjectSet
+import com.memfault.bort.diagnostics.BortErrorsDb
+import com.memfault.bort.http.RetrofitInterceptor
 import com.memfault.bort.logcat.KernelOopsDetector
 import com.memfault.bort.logcat.NoopLogcatLineProcessor
 import com.memfault.bort.metrics.BuiltinMetricsStore
+import com.memfault.bort.metrics.database.MetricsDb
+import com.memfault.bort.settings.AllowProjectKeyChange
+import com.memfault.bort.settings.BuiltInProjectKey
 import com.memfault.bort.settings.BundledConfig
 import com.memfault.bort.settings.DeviceConfigUpdateService
 import com.memfault.bort.settings.SettingsProvider
-import com.memfault.bort.settings.SettingsUpdateService
 import com.memfault.bort.settings.readBundledSettings
 import com.memfault.bort.shared.BASIC_COMMAND_TIMEOUT_MS
-import com.memfault.bort.shared.JitterDelayProvider.ApplyJitter.APPLY
+import com.memfault.bort.shared.BuildConfig
 import com.memfault.bort.tokenbucket.Anr
 import com.memfault.bort.tokenbucket.BugReportPeriodic
 import com.memfault.bort.tokenbucket.BugReportRequestStore
@@ -35,40 +42,20 @@ import com.memfault.bort.tokenbucket.Tombstone
 import com.memfault.bort.tokenbucket.Wtf
 import com.memfault.bort.tokenbucket.WtfTotal
 import com.memfault.bort.uploader.PreparedUploadService
-import com.squareup.anvil.annotations.ContributesTo
-import dagger.Binds
 import dagger.Lazy
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
 import dagger.hilt.components.SingletonComponent
 import dagger.multibindings.IntoSet
-import java.io.File
-import javax.inject.Qualifier
-import javax.inject.Singleton
-import kotlin.annotation.AnnotationRetention.RUNTIME
-import kotlin.annotation.AnnotationTarget.FIELD
-import kotlin.annotation.AnnotationTarget.FUNCTION
-import kotlin.annotation.AnnotationTarget.PROPERTY_GETTER
-import kotlin.annotation.AnnotationTarget.PROPERTY_SETTER
-import kotlin.annotation.AnnotationTarget.VALUE_PARAMETER
-import kotlin.time.toJavaDuration
 import okhttp3.HttpUrl.Companion.toHttpUrl
-import okhttp3.Interceptor
 import okhttp3.OkHttpClient
 import retrofit2.Retrofit
 import vnd.myandroid.bortappid.CustomLogScrubber
-
-/**
- * Bindings which are applicable only to the "release" build. These are replaced by DebugModule in the
- * debug build
- */
-@Module
-@ContributesTo(SingletonComponent::class)
-class ReleaseModule {
-    @Provides
-    fun applyJitter() = APPLY
-}
+import java.io.File
+import javax.inject.Qualifier
+import javax.inject.Singleton
+import kotlin.time.toJavaDuration
 
 /**
  * Anything that:
@@ -98,13 +85,19 @@ abstract class BortAppModule {
         @Singleton
         fun okHttpClient(
             settingsProvider: SettingsProvider,
-            interceptors: InjectSet<Interceptor>,
+            interceptors: InjectSet<RetrofitInterceptor>,
         ) = OkHttpClient.Builder()
             .connectTimeout(settingsProvider.httpApiSettings.connectTimeout.toJavaDuration())
             .writeTimeout(settingsProvider.httpApiSettings.writeTimeout.toJavaDuration())
             .readTimeout(settingsProvider.httpApiSettings.readTimeout.toJavaDuration())
             .callTimeout(settingsProvider.httpApiSettings.callTimeout.toJavaDuration())
-            .also { client -> interceptors.forEach { client.addInterceptor(it) } }
+            .also { client ->
+                check(interceptors.size == 4) {
+                    "Update this check when adding or removing RetrofitInterceptors."
+                }
+                interceptors.sortedBy { it.type.order }
+                    .forEach { client.addInterceptor(it) }
+            }
             .build()
 
         @Provides
@@ -113,7 +106,7 @@ abstract class BortAppModule {
             .client(okHttpClient)
             .baseUrl(settingsProvider.httpApiSettings.filesBaseUrl.toHttpUrl())
             .addConverterFactory(
-                kotlinxJsonConverterFactory()
+                kotlinxJsonConverterFactory(),
             )
             .build()
 
@@ -121,8 +114,12 @@ abstract class BortAppModule {
         @Provides
         fun holdingAreaPharedPrefs(context: Application) = context.getSharedPreferences(
             FILE_UPLOAD_HOLDING_AREA_PREFERENCE_FILE_NAME,
-            Context.MODE_PRIVATE
+            Context.MODE_PRIVATE,
         )
+
+        @Provides
+        fun provideSharedPreferences(application: Application): SharedPreferences =
+            PreferenceManager.getDefaultSharedPreferences(application)
 
         @Provides
         fun bundledConfig(resources: Resources) = BundledConfig {
@@ -130,10 +127,7 @@ abstract class BortAppModule {
         }
 
         @Provides
-        fun bootId() = LinuxBootId { File("/proc/sys/kernel/random/boot_id").readText().trim() }
-
-        @Provides
-        @BasicCommandTimout
+        @BasicCommandTimeout
         fun basicTimeout(): Long = BASIC_COMMAND_TIMEOUT_MS
 
         @Provides
@@ -498,7 +492,7 @@ abstract class BortAppModule {
             getTokenBucketFactory = {
                 RealTokenBucketFactory.from(
                     settingsProvider.dropBoxSettings.continuousLogFileRateLimitingSettings,
-                    metrics
+                    metrics,
                 )
             },
             devMode = devMode,
@@ -535,32 +529,30 @@ abstract class BortAppModule {
 
         @Provides
         @Singleton
-        fun settingsUpdateService(okHttpClient: OkHttpClient, settingsProvider: SettingsProvider) =
-            SettingsUpdateService.create(
-                okHttpClient = okHttpClient,
-                deviceBaseUrl = settingsProvider.httpApiSettings.deviceBaseUrl
-            )
-
-        @Provides
-        @Singleton
-        fun deviceConfigUpdateService(okHttpClient: OkHttpClient, settingsProvider: SettingsProvider) =
+        fun deviceConfigUpdateService(
+            okHttpClient: OkHttpClient,
+            settingsProvider: SettingsProvider,
+        ) =
             DeviceConfigUpdateService.create(
                 okHttpClient = okHttpClient,
-                deviceBaseUrl = settingsProvider.httpApiSettings.deviceBaseUrl
+                deviceBaseUrl = settingsProvider.httpApiSettings.deviceBaseUrl,
             )
 
         @Provides
         fun dataScrubber(settingsProvider: SettingsProvider): DataScrubber = DataScrubber(
             settingsProvider.dataScrubbingSettings.rules.filterIsInstance(LineScrubbingCleaner::class.java) +
-                CustomLogScrubber
+                CustomLogScrubber,
         )
 
         @Provides
         fun kernelOopsDetector(
             settingsProvider: SettingsProvider,
             kernelOopsDetector: KernelOopsDetector,
-        ) = if (settingsProvider.logcatSettings.kernelOopsDataSourceEnabled) kernelOopsDetector
-        else NoopLogcatLineProcessor
+        ) = if (settingsProvider.logcatSettings.kernelOopsDataSourceEnabled) {
+            kernelOopsDetector
+        } else {
+            NoopLogcatLineProcessor
+        }
 
         @Provides
         @MarFileSampledHoldingDir
@@ -569,31 +561,31 @@ abstract class BortAppModule {
         @Provides
         @MarFileUnsampledHoldingDir
         fun marFileUnsampledHoldingDir(application: Application) = File(application.filesDir, "mar-unsampled")
-    }
 
-    @Binds
-    abstract fun reporterConnector(real: RealReporterServiceConnector): ReporterServiceConnector
+        @Singleton
+        @Provides
+        fun metricsDb(application: Application) = MetricsDb.create(application)
+
+        @Singleton
+        @Provides
+        fun bortErrorsDb(application: Application) = BortErrorsDb.create(application)
+
+        @Provides
+        fun projectKeySyspropName() = ProjectKeySyspropName { BuildConfig.PROJECT_KEY_SYSPROP }
+
+        @Provides
+        fun builtInProjectKey() = BuiltInProjectKey { BuildConfig.MEMFAULT_PROJECT_API_KEY }
+
+        @Provides
+        fun allowProjectKeyChange() = AllowProjectKeyChange { BuildConfig.ALLOW_PROJECT_KEY_CHANGE }
+    }
 }
 
 @Qualifier
-@Retention(RUNTIME)
-@Target(FIELD, VALUE_PARAMETER, FUNCTION, PROPERTY_GETTER, PROPERTY_SETTER)
 annotation class UploadHoldingArea
 
 @Qualifier
-@Retention(RUNTIME)
-@Target(FIELD, VALUE_PARAMETER, FUNCTION, PROPERTY_GETTER, PROPERTY_SETTER)
 annotation class MarFileSampledHoldingDir
 
 @Qualifier
-@Retention(RUNTIME)
-@Target(FIELD, VALUE_PARAMETER, FUNCTION, PROPERTY_GETTER, PROPERTY_SETTER)
 annotation class MarFileUnsampledHoldingDir
-
-/**
- * Injecting Set<T> for multibinding doesn't work in Kotlin, because the kotlin set is typed Set<out T>, so we get
- * a missing binding error. Always use this alias e.g. InjectSet<T> to inject multibinding values, instead.
- */
-typealias InjectSet<T> = Set<@JvmSuppressWildcards T>
-
-// typealias InjectMap<K, V> = Map<@JvmSuppressWildcards K, @JvmSuppressWildcards V>

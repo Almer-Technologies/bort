@@ -7,22 +7,22 @@ import com.memfault.bort.asResult
 import com.memfault.bort.shared.Logger
 import com.squareup.anvil.annotations.ContributesBinding
 import dagger.hilt.components.SingletonComponent
+import retrofit2.HttpException
 import java.io.File
 import javax.inject.Inject
-import retrofit2.HttpException
 
 @ContributesBinding(SingletonComponent::class)
 class MemfaultFileUploader @Inject constructor(
-    private val preparedUploader: PreparedUploader
+    private val preparedUploader: PreparedUploader,
 ) : FileUploader {
     override suspend fun upload(file: File, payload: Payload, shouldCompress: Boolean): TaskResult {
         val prepareResponse = try {
             preparedUploader.prepare(file, payload.kind())
         } catch (e: HttpException) {
-            Logger.e("prepare", e)
+            Logger.e("Upload failed due to HTTP error", e)
             return TaskResult.RETRY
         } catch (e: Exception) {
-            Logger.e("prepare", e)
+            Logger.e("Upload failed due to error", e)
             return TaskResult.RETRY
         }
 

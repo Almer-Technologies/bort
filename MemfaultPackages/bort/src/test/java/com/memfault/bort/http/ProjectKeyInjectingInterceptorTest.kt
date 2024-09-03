@@ -1,7 +1,6 @@
 package com.memfault.bort.http
 
-import java.util.concurrent.TimeUnit
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.runTest
 import okhttp3.OkHttpClient
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
@@ -14,6 +13,7 @@ import org.junit.jupiter.api.Test
 import retrofit2.Response
 import retrofit2.Retrofit
 import retrofit2.http.POST
+import java.util.concurrent.TimeUnit
 
 interface AuthTestService {
     @POST("/authenticatedApi")
@@ -38,7 +38,7 @@ class ProjectKeyInjectingInterceptorTest {
             .client(
                 OkHttpClient.Builder()
                     .addInterceptor(ProjectKeyInjectingInterceptor({ SECRET }))
-                    .build()
+                    .build(),
             )
             .baseUrl(server.url("/"))
             .build()
@@ -46,26 +46,22 @@ class ProjectKeyInjectingInterceptorTest {
     }
 
     @Test
-    fun authedApi() {
-        runBlocking {
-            server.enqueue(MockResponse().setResponseCode(200))
-            service.authenticatedApi()
-            server.takeRequest(5, TimeUnit.MILLISECONDS).let {
-                assertNotNull(it)
-                assertEquals(SECRET, it?.getHeader(PROJECT_KEY_HEADER))
-            }
+    fun authedApi() = runTest {
+        server.enqueue(MockResponse().setResponseCode(200))
+        service.authenticatedApi()
+        server.takeRequest(5, TimeUnit.MILLISECONDS).let {
+            assertNotNull(it)
+            assertEquals(SECRET, it?.getHeader(PROJECT_KEY_HEADER))
         }
     }
 
     @Test
-    fun openApi() {
-        runBlocking {
-            server.enqueue(MockResponse().setResponseCode(200))
-            service.openApi()
-            server.takeRequest(5, TimeUnit.MILLISECONDS).let {
-                assertNotNull(it)
-                assertNull(it?.getHeader(PROJECT_KEY_HEADER))
-            }
+    fun openApi() = runTest {
+        server.enqueue(MockResponse().setResponseCode(200))
+        service.openApi()
+        server.takeRequest(5, TimeUnit.MILLISECONDS).let {
+            assertNotNull(it)
+            assertNull(it?.getHeader(PROJECT_KEY_HEADER))
         }
     }
 }

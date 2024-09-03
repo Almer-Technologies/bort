@@ -9,6 +9,7 @@ import com.memfault.bort.PackageNameAllowList
 import com.memfault.bort.logcat.FakeNextLogcatCidProvider
 import com.memfault.bort.logcat.KernelOopsDetector
 import com.memfault.bort.logcat.NextLogcatCidProvider
+import com.memfault.bort.logcat.SelinuxViolationLogcatDetector
 import com.memfault.bort.parsers.Package
 import com.memfault.bort.parsers.PackageManagerReport
 import com.memfault.bort.settings.LogcatCollectionMode
@@ -21,24 +22,26 @@ import com.memfault.bort.uploader.FileUploadHoldingArea
 import com.memfault.bort.uploader.PendingFileUploadEntry
 import io.mockk.CapturingSlot
 import io.mockk.coEvery
+import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.slot
 import io.mockk.verify
-import kotlin.time.Duration
-import kotlin.time.Duration.Companion.minutes
-import kotlin.time.Duration.Companion.seconds
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.minutes
+import kotlin.time.Duration.Companion.seconds
 
 class ContinuousLogcatEntryProcessorTest {
     lateinit var addedFileSlot: CapturingSlot<PendingFileUploadEntry>
     lateinit var logcatCidProvider: NextLogcatCidProvider
     lateinit var mockFileUploadingArea: FileUploadHoldingArea
     lateinit var mockKernelOopsDetector: KernelOopsDetector
+    lateinit var selinuxViolationLogcatDetector: SelinuxViolationLogcatDetector
     lateinit var mockPackageManagerClient: PackageManagerClient
     lateinit var mockPackageNameAllowList: PackageNameAllowList
     lateinit var processor: ContinuousLogcatEntryProcessor
@@ -52,12 +55,12 @@ class ContinuousLogcatEntryProcessorTest {
         }
 
         mockPackageManagerClient = mockk {
-            coEvery { getPackageManagerReport(null) } returns PackageManagerReport(
+            coEvery { getPackageManagerReport() } returns PackageManagerReport(
                 listOf(
                     Package(id = "android", userId = 1000),
                     Package(id = "com.memfault.bort", userId = 9008),
                     Package(id = "org.smartcompany.smartcupholder", userId = 9020),
-                )
+                ),
             )
         }
 
@@ -68,6 +71,8 @@ class ContinuousLogcatEntryProcessorTest {
         }
 
         mockKernelOopsDetector = mockk(relaxed = true)
+
+        selinuxViolationLogcatDetector = mockk(relaxed = true)
 
         logcatCidProvider = FakeNextLogcatCidProvider.incrementing()
 
@@ -98,6 +103,7 @@ class ContinuousLogcatEntryProcessorTest {
             combinedTimeProvider = FakeCombinedTimeProvider,
             fileUploadingArea = mockFileUploadingArea,
             kernelOopsDetector = { mockKernelOopsDetector },
+            selinuxViolationLogcatDetector = selinuxViolationLogcatDetector,
             tokenBucketStore = mockk {
                 every { takeSimple(any(), any(), any()) } returns true
             },
@@ -107,13 +113,13 @@ class ContinuousLogcatEntryProcessorTest {
     @Test
     fun `happy path`() = withProcessedEntry {
         verify { mockKernelOopsDetector.process(any()) }
-        verify(exactly = 1) { mockKernelOopsDetector.finish(any()) }
+        coVerify(exactly = 1) { mockKernelOopsDetector.finish(any()) }
         verify(exactly = 1) { mockFileUploadingArea.add(any()) }
         assertTrue(addedFileSlot.isCaptured)
 
         assertEquals(
             expectedScrubbedLogcat,
-            addedFileSlot.captured.file.readText()
+            addedFileSlot.captured.file.readText(),
         )
     }
 
@@ -145,12 +151,13 @@ class ContinuousLogcatEntryProcessorTest {
         }
     }
 
-    private fun withProcessedEntry(text: String = sampleLogcat, block: DropBoxManager.Entry.() -> Unit) {
-        runBlocking {
-            val entry = mockEntry(text = text)
-            processor.process(entry)
-            block(entry)
-        }
+    private fun withProcessedEntry(
+        text: String = sampleLogcat,
+        block: DropBoxManager.Entry.() -> Unit,
+    ) = runTest {
+        val entry = mockEntry(text = text)
+        processor.process(entry)
+        block(entry)
     }
 
     private val sampleLogcat = """

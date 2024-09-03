@@ -4,16 +4,19 @@ import com.memfault.bort.PackageManagerClient
 import com.memfault.bort.parsers.Package
 import com.memfault.bort.parsers.PackageManagerReport
 import com.memfault.bort.settings.MetricsSettings
+import com.memfault.bort.settings.RateLimitingSettings
+import com.memfault.bort.time.boxed
 import io.mockk.Called
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.coVerifyAll
 import io.mockk.mockk
 import io.mockk.verify
+import kotlinx.coroutines.test.runTest
+import org.junit.jupiter.api.Test
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.ZERO
-import kotlinx.coroutines.runBlocking
-import org.junit.jupiter.api.Test
+import kotlin.time.Duration.Companion.hours
 
 class AppVersionsCollectorTest {
     val store: DevicePropertiesStore = mockk(relaxed = true)
@@ -24,9 +27,14 @@ class AppVersionsCollectorTest {
     }
     var maxNumberAppVersions = 50
     val collector = AppVersionsCollector(
-        devicePropertiesStore = store,
         metricsSettings = object : MetricsSettings {
             override val dataSourceEnabled: Boolean = false
+            override val dailyHeartbeatEnabled: Boolean = false
+            override val sessionsRateLimitingSettings: RateLimitingSettings = RateLimitingSettings(
+                defaultCapacity = 11,
+                defaultPeriod = 24.hours.boxed(),
+                maxBuckets = 1,
+            )
             override val collectionInterval: Duration = ZERO
             override val systemProperties: List<String> = emptyList()
             override val appVersions: List<String>
@@ -34,11 +42,19 @@ class AppVersionsCollectorTest {
             override val maxNumAppVersions: Int
                 get() = maxNumberAppVersions
             override val reporterCollectionInterval: Duration = ZERO
+            override val propertiesUseMetricService: Boolean
+                get() = true
+            override val cachePackageManagerReport: Boolean
+                get() = true
+            override val recordImei: Boolean
+                get() = false
+            override val operationalCrashesExclusions: List<String>
+                get() = emptyList()
         },
         packageManagerClient = pmClient,
     )
 
-    @Test fun addsAppVersionsWithWildcard() {
+    @Test fun addsAppVersionsWithWildcard() = runTest {
         packages = listOf("a.b.c", "b.*")
         report = PackageManagerReport(
             listOf(
@@ -46,40 +62,36 @@ class AppVersionsCollectorTest {
                 Package(id = ABCD_ID, versionName = ABCD_VERSION),
                 Package(id = BCD_ID, versionName = BCD_VERSION),
                 Package(id = BCE_ID, versionName = BCE_VERSION),
-            )
+            ),
         )
-        runBlocking {
-            collector.updateAppVersions()
-            coVerifyAll {
-                store.upsert(
-                    name = "version.$ABC_ID",
-                    value = ABC_VERSION,
-                    internal = false,
-                )
-                store.upsert(
-                    name = "version.$BCD_ID",
-                    value = BCD_VERSION,
-                    internal = false,
-                )
-                store.upsert(
-                    name = "version.$BCE_ID",
-                    value = BCE_VERSION,
-                    internal = false,
-                )
-            }
+        collector.updateAppVersions(store)
+        coVerifyAll {
+            store.upsert(
+                name = "version.$ABC_ID",
+                value = ABC_VERSION,
+                internal = false,
+            )
+            store.upsert(
+                name = "version.$BCD_ID",
+                value = BCD_VERSION,
+                internal = false,
+            )
+            store.upsert(
+                name = "version.$BCE_ID",
+                value = BCE_VERSION,
+                internal = false,
+            )
         }
     }
 
-    @Test fun packageManagerNotCalledIfNoRegexes() {
+    @Test fun packageManagerNotCalledIfNoRegexes() = runTest {
         packages = emptyList()
-        runBlocking {
-            collector.updateAppVersions()
-            verify { pmClient wasNot Called }
-            verify { store wasNot Called }
-        }
+        collector.updateAppVersions(store)
+        verify { pmClient wasNot Called }
+        verify { store wasNot Called }
     }
 
-    @Test fun maxNumVersionsCollected() {
+    @Test fun maxNumVersionsCollected() = runTest {
         packages = listOf("*")
         maxNumberAppVersions = 3
         report = PackageManagerReport(
@@ -88,12 +100,10 @@ class AppVersionsCollectorTest {
                 Package(id = ABCD_ID, versionName = ABCD_VERSION),
                 Package(id = BCD_ID, versionName = BCD_VERSION),
                 Package(id = BCE_ID, versionName = BCE_VERSION),
-            )
+            ),
         )
-        runBlocking {
-            collector.updateAppVersions()
-            coVerify(exactly = 3) { store.upsert(any(), any<String>(), false) }
-        }
+        collector.updateAppVersions(store)
+        coVerify(exactly = 3) { store.upsert(any(), any<String>(), false) }
     }
 
     companion object {

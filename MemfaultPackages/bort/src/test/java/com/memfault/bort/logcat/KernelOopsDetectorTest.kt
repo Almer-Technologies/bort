@@ -5,10 +5,12 @@ import com.memfault.bort.parsers.LogcatLine
 import com.memfault.bort.time.BaseAbsoluteTime
 import com.memfault.bort.tokenbucket.TokenBucketStore
 import com.memfault.bort.uploader.HandleEventOfInterest
+import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.mockkStatic
 import io.mockk.verify
+import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
@@ -48,9 +50,9 @@ class KernelOopsDetectorTest {
     }
 
     @Test
-    fun finishNoOopsFound() {
+    fun finishNoOopsFound() = runTest {
         detector.finish(FakeCombinedTimeProvider.now())
-        verify(exactly = 0) { mockHandleEventOfInterest.handleEventOfInterest(any<BaseAbsoluteTime>()) }
+        coVerify(exactly = 0) { mockHandleEventOfInterest.handleEventOfInterest(any<BaseAbsoluteTime>()) }
     }
 
     @Test
@@ -73,7 +75,7 @@ class KernelOopsDetectorTest {
     }
 
     @Test
-    fun finishOopsFoundButRateLimited() {
+    fun finishOopsFoundButRateLimited() = runTest {
         detector = KernelOopsDetector(
             tokenBucketStore = mockTokenBucketStore,
             handleEventOfInterest = mockHandleEventOfInterest,
@@ -82,11 +84,11 @@ class KernelOopsDetectorTest {
         mockLimitRate(limited = true)
 
         detector.finish(FakeCombinedTimeProvider.now())
-        verify(exactly = 0) { mockHandleEventOfInterest.handleEventOfInterest(any<BaseAbsoluteTime>()) }
+        coVerify(exactly = 0) { mockHandleEventOfInterest.handleEventOfInterest(any<BaseAbsoluteTime>()) }
     }
 
     @Test
-    fun finishOopsFound() {
+    fun finishOopsFound() = runTest {
         detector = KernelOopsDetector(
             tokenBucketStore = mockTokenBucketStore,
             handleEventOfInterest = mockHandleEventOfInterest,
@@ -96,6 +98,6 @@ class KernelOopsDetectorTest {
 
         val time = FakeCombinedTimeProvider.now()
         detector.finish(time)
-        verify(exactly = 1) { mockHandleEventOfInterest.handleEventOfInterest(any<BaseAbsoluteTime>()) }
+        coVerify(exactly = 1) { mockHandleEventOfInterest.handleEventOfInterest(any<BaseAbsoluteTime>()) }
     }
 }

@@ -1,6 +1,10 @@
 package com.memfault.bort.shared
 
 import android.content.SharedPreferences
+import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.conflate
 
 /**
  * Does not support nullable types.
@@ -8,7 +12,8 @@ import android.content.SharedPreferences
 abstract class PreferenceKeyProvider<T>(
     private val sharedPreferences: SharedPreferences,
     private val defaultValue: T,
-    private val preferenceKey: String
+    private val preferenceKey: String,
+    private val commit: Boolean = false,
 ) {
     init {
         when (defaultValue) {
@@ -29,7 +34,7 @@ abstract class PreferenceKeyProvider<T>(
             is Set<*> -> putStringSet(preferenceKey, ensureStringSet(newValue))
             else -> throw IllegalArgumentException("Unsupported type $newValue")
         }
-        apply()
+        if (commit) commit() else apply()
     }
 
     @Suppress("UNCHECKED_CAST")
@@ -44,6 +49,27 @@ abstract class PreferenceKeyProvider<T>(
             else -> throw IllegalArgumentException("Unsupported type $defaultValue")
         }
     }
+
+    /**
+     * Returns a [Flow] of the value of this preference, which emits when it changes.
+     *
+     * Note that this flow is [conflate]d, so it always buffers the latest value that's emitted, to avoid dropping
+     * emissions due to slow collectors, since we use [trySend]. You will need to build another mechanism if you need
+     * every change.
+     *
+     * Note that this method does not emit immediately upon subscription.
+     */
+    fun valueChangedFlow(): Flow<T> = callbackFlow {
+        val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key: String? ->
+            // Key can be null when preferences are cleared on API 30+.
+            if (key == preferenceKey || key == null) {
+                trySend(getValue())
+            }
+        }
+        sharedPreferences.registerOnSharedPreferenceChangeListener(listener)
+        awaitClose { sharedPreferences.unregisterOnSharedPreferenceChangeListener(listener) }
+    }
+        .conflate()
 
     @Suppress("UNCHECKED_CAST")
     private fun ensureStringSet(value: Set<*>): Set<String> {

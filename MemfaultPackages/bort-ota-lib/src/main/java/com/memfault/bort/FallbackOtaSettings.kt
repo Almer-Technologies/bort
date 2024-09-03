@@ -1,6 +1,7 @@
 package com.memfault.bort
 
-import android.content.Context
+import android.app.Application
+import androidx.work.NetworkType
 import androidx.work.NetworkType.CONNECTED
 import androidx.work.NetworkType.UNMETERED
 import com.memfault.bort.reporting.Reporting
@@ -12,21 +13,26 @@ import com.memfault.bort.shared.BuildConfig
 import com.memfault.bort.shared.Logger
 import com.memfault.bort.shared.SoftwareUpdateSettings
 import kotlinx.coroutines.runBlocking
+import javax.inject.Inject
+import javax.inject.Singleton
 
 /**
  * If we fail to read settings from the Bort app, then use the bundled SDK settings as a fallback (the only other option
  * is crashing).
  */
-class FallbackOtaSettings(
-    private val context: Context,
+@Singleton
+class FallbackOtaSettings @Inject constructor(
+    private val application: Application,
     private val dumpsterClient: DumpsterClient,
 ) {
-    private val bundledConfig by lazy { context.resources.readBundledSettings() }
+    private val bundledConfig by lazy { application.resources.readBundledSettings() }
     private val bundledSdkSettings by lazy { FetchedSettings.from(bundledConfig) { BortSharedJson } }
     private val deviceInfoProvider by lazy {
         RealDeviceInfoProvider(
             deviceInfoSettings = bundledSdkSettings.deviceInfoSettings(),
             dumpsterClient = dumpsterClient,
+            application = application,
+            overrideSerial = NoOpOverrideSerial,
         )
     }
     private val deviceInfo by lazy { runBlocking { deviceInfoProvider.getDeviceInfo() } }
@@ -43,8 +49,13 @@ class FallbackOtaSettings(
             updateCheckIntervalMs = bundledSdkSettings.otaUpdateCheckInterval.duration.inWholeMilliseconds,
             baseUrl = bundledSdkSettings.httpApiDeviceBaseUrl,
             projectApiKey = BuildConfig.MEMFAULT_PROJECT_API_KEY,
-            downloadNetworkTypeConstraint = if (bundledSdkSettings.otaDownloadNetworkConstraintAllowMeteredConnection)
-                CONNECTED else UNMETERED,
+            downloadNetworkTypeConstraint = NetworkType.entries.firstOrNull {
+                it.name.equals(bundledSdkSettings.otaDownloadNetworkConstraint, ignoreCase = true)
+            } ?: if (bundledSdkSettings.otaDownloadNetworkConstraintAllowMeteredConnection) {
+                CONNECTED
+            } else {
+                UNMETERED
+            },
         )
     }
 }

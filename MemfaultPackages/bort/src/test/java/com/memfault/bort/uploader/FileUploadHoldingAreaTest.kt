@@ -2,8 +2,8 @@ package com.memfault.bort.uploader
 
 import com.memfault.bort.BortJson
 import com.memfault.bort.FakeCombinedTimeProvider
+import com.memfault.bort.FakeSharedPreferences
 import com.memfault.bort.LogcatCollectionId
-import com.memfault.bort.MockSharedPreferences
 import com.memfault.bort.clientserver.MarMetadata.LogcatMarMetadata
 import com.memfault.bort.fileExt.deleteSilently
 import com.memfault.bort.makeFakeSharedPreferences
@@ -20,22 +20,23 @@ import com.memfault.bort.time.BoxedDuration
 import com.memfault.bort.time.CombinedTime
 import com.memfault.bort.uploader.PendingFileUploadEntry.TimeSpan
 import io.mockk.coEvery
+import io.mockk.coVerify
 import io.mockk.mockk
-import io.mockk.verify
+import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.decodeFromString
+import org.junit.jupiter.api.AfterEach
+import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.BeforeEach
+import org.junit.jupiter.api.Test
 import java.io.File
 import java.time.Instant
 import java.util.UUID
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
-import kotlinx.serialization.decodeFromString
-import org.junit.jupiter.api.AfterEach
-import org.junit.jupiter.api.Assertions.assertEquals
-import org.junit.jupiter.api.BeforeEach
-import org.junit.jupiter.api.Test
 
 class FileUploadHoldingAreaTest {
-    lateinit var mockSharedPreferences: MockSharedPreferences
+    lateinit var mockSharedPreferences: FakeSharedPreferences
     lateinit var mockEnqueueUpload: EnqueueUpload
     lateinit var fileUploadHoldingArea: FileUploadHoldingArea
     private val currentSamplingConfig = mockk<CurrentSamplingConfig> { coEvery { get() } returns SamplingConfig() }
@@ -88,6 +89,7 @@ class FileUploadHoldingAreaTest {
         tempFiles.forEach(File::deleteSilently)
     }
 
+    @Suppress("DEPRECATION")
     private fun makeTempFile() =
         createTempFile().also {
             tempFiles.add(it)
@@ -118,23 +120,23 @@ class FileUploadHoldingAreaTest {
     )
 
     @Test
-    fun addEnqueueImmediately() {
+    fun addEnqueueImmediately() = runTest {
         val entry = makeEntry(9.seconds, 10.seconds)
         fileUploadHoldingArea.handleEventOfInterest(10.seconds)
         fileUploadHoldingArea.add(entry)
-        verify { mockEnqueueUpload.enqueue(entry.file, entry.asMarMetadata(), entry.payload.collectionTime) }
+        coVerify { mockEnqueueUpload.enqueue(entry.file, entry.asMarMetadata(), entry.payload.collectionTime) }
     }
 
     @Test
     fun addAndHold() {
         val entry = makeEntry(9.seconds, 10.seconds)
         fileUploadHoldingArea.add(entry)
-        verify(exactly = 0) { mockEnqueueUpload.enqueue(any(), any(), any(), any()) }
+        coVerify(exactly = 0) { mockEnqueueUpload.enqueue(any(), any(), any(), any()) }
         assertEquals(listOf(entry), fileUploadHoldingArea.readEntries())
     }
 
     @Test
-    fun prunesOldEventTimesWhenHandingEvents() {
+    fun prunesOldEventTimesWhenHandingEvents() = runTest {
         fileUploadHoldingArea.handleEventOfInterest(1.seconds)
         assertEquals(listOf(1.seconds), fileUploadHoldingArea.readEventTimes())
 
@@ -146,7 +148,7 @@ class FileUploadHoldingAreaTest {
     }
 
     @Test
-    fun checksTriggersAndCleansPendingUploadsWhenHandingEvents() {
+    fun checksTriggersAndCleansPendingUploadsWhenHandingEvents() = runTest {
         val expectToDeleteEntry = makeEntry(1.seconds, 2.seconds)
 
         assertEquals(7.seconds, 2.seconds + trailingMarginVal)
@@ -159,7 +161,7 @@ class FileUploadHoldingAreaTest {
         fileUploadHoldingArea.handleEventOfInterest(7.seconds)
 
         assertEquals(listOf(expectToHoldEntry), fileUploadHoldingArea.readEntries())
-        verify {
+        coVerify {
             mockEnqueueUpload.enqueue(
                 expectToUploadEntry.file,
                 expectToUploadEntry.asMarMetadata(),
@@ -170,7 +172,7 @@ class FileUploadHoldingAreaTest {
     }
 
     @Test
-    fun handleBootCompletedWipesIfLinuxRebooted() {
+    fun handleBootCompletedWipesIfLinuxRebooted() = runTest {
         val eventTime = 1.seconds
         fileUploadHoldingArea.handleEventOfInterest(eventTime)
         val entry = makeEntry(2.seconds, 3.seconds)
@@ -197,7 +199,7 @@ class FileUploadHoldingAreaTest {
 
         fileUploadHoldingArea.handleTimeout(7.seconds)
         assertEquals(false, expectToDeleteEntry.file.exists())
-        verify(exactly = 0) {
+        coVerify(exactly = 0) {
             mockEnqueueUpload.enqueue(
                 file = expectToDeleteEntry.file,
                 metadata = any(),
@@ -220,7 +222,7 @@ class FileUploadHoldingAreaTest {
         }
 
         fileUploadHoldingArea.handleTimeout(7.seconds)
-        verify(exactly = 1) {
+        coVerify(exactly = 1) {
             mockEnqueueUpload.enqueue(
                 file = expectToStoreEntry.file,
                 metadata = expectToStoreEntry.asMarMetadata(),
@@ -232,9 +234,11 @@ class FileUploadHoldingAreaTest {
     }
 
     @Test
-    fun maxStoredEventsOfInterest() {
+    fun maxStoredEventsOfInterest() = runTest {
         val eventTimes = (0..10).map { it.seconds }
-        eventTimes.forEach(fileUploadHoldingArea::handleEventOfInterest)
+        eventTimes.forEach { duration ->
+            fileUploadHoldingArea.handleEventOfInterest(duration)
+        }
         assertEquals(eventTimes.takeLast(maxStoredEventsOfInterestVal), fileUploadHoldingArea.readEventTimes())
     }
 
@@ -253,7 +257,8 @@ class FileUploadHoldingAreaTest {
                 |"uuid":"798d0fa6-2cce-438f-9dcc-c5abb6cfe867"},"next_cid":{"uuid":
                 |"4c0d08a3-bd2a-4dc0-ad62-4a252f4d3abe"},"contains_oops":false,"collection_mode":"periodic"},
                 |"file":"/data/user/0/com.memfault.smartfridge.bort/cache/logcat900531055540371522.txt",
-                |"debug_tag":"UPLOAD_LOGCAT"}]""".trimMargin()
+                |"debug_tag":"UPLOAD_LOGCAT"}]
+            """.trimMargin()
         val decoded = BortJson.decodeFromString<List<PendingFileUploadEntry>>(json)
         assertEquals(
             listOf(
@@ -298,7 +303,7 @@ class FileUploadHoldingAreaTest {
                         collectionMode = PERIODIC,
                     ),
                     file = File("/data/user/0/com.memfault.smartfridge.bort/cache/logcat900531055540371522.txt"),
-                )
+                ),
             ),
             decoded,
         )

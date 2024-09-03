@@ -5,6 +5,7 @@ import com.memfault.bort.DeviceInfoProvider
 import com.memfault.bort.LogcatCollectionId
 import com.memfault.bort.ProcessingOptions
 import com.memfault.bort.TimezoneWithId
+import com.memfault.bort.chronicler.ClientChroniclerEntry
 import com.memfault.bort.settings.LogcatCollectionMode
 import com.memfault.bort.settings.ProjectKey
 import com.memfault.bort.settings.Resolution
@@ -61,6 +62,10 @@ sealed class MarMetadata {
         val customMetrics: Map<String, JsonPrimitive>,
         @SerialName("builtin_metrics")
         val builtinMetrics: Map<String, JsonPrimitive>,
+        @SerialName("report_type")
+        val reportType: String,
+        @SerialName("report_name")
+        val reportName: String? = null,
     ) : MarMetadata()
 
     @Serializable
@@ -87,6 +92,13 @@ sealed class MarMetadata {
         val processingOptions: ProcessingOptions,
         @SerialName("request_id")
         val requestId: String? = null,
+    ) : MarMetadata()
+
+    @Serializable
+    @SerialName("client-chronicler")
+    data class ClientChroniclerMarMetadata(
+        @SerialName("entries")
+        val entries: List<ClientChroniclerEntry>,
     ) : MarMetadata()
 
     @Serializable
@@ -148,6 +160,19 @@ sealed class MarMetadata {
     ) : MarMetadata()
 
     @Serializable
+    @SerialName("android-selinux")
+    data class SelinuxViolationMarMetadata(
+        @SerialName("raw_denial")
+        val rawDenial: String,
+        @SerialName("package_name")
+        val packageName: String?,
+        @SerialName("package_version_name")
+        val packageVersionName: String?,
+        @SerialName("package_version_code")
+        val packageVersionCode: Long?,
+    ) : MarMetadata()
+
+    @Serializable
     @SerialName("android-device-config")
     data class DeviceConfigMarMetadata(
         @SerialName("revision")
@@ -175,6 +200,15 @@ sealed class MarMetadata {
                 is BugReportMarMetadata -> MarManifest(
                     collectionTime = collectionTime,
                     type = "android-bugreport",
+                    device = device,
+                    metadata = metadata,
+                    debuggingResolution = Resolution.NORMAL,
+                    loggingResolution = Resolution.NOT_APPLICABLE,
+                    monitoringResolution = Resolution.NOT_APPLICABLE,
+                )
+                is ClientChroniclerMarMetadata -> MarManifest(
+                    collectionTime = collectionTime,
+                    type = "client-chronicler",
                     device = device,
                     metadata = metadata,
                     debuggingResolution = Resolution.NORMAL,
@@ -222,7 +256,7 @@ sealed class MarMetadata {
                     type = "android-device-config",
                     device = device,
                     metadata = metadata,
-                    // All resolutions are set of OFF. This means that the file is always uploaded, regardless of device
+                    // All resolutions are set to OFF. This means that the file is always uploaded, regardless of device
                     // fleet-sampling configuration.
                     debuggingResolution = Resolution.OFF,
                     loggingResolution = Resolution.OFF,
@@ -231,6 +265,17 @@ sealed class MarMetadata {
                 is RebootMarMetadata -> MarManifest(
                     collectionTime = collectionTime,
                     type = "android-reboot",
+                    device = device,
+                    metadata = metadata,
+                    // All resolutions are set to OFF. This means that the file is always uploaded, regardless of device
+                    // fleet-sampling configuration.
+                    debuggingResolution = Resolution.OFF,
+                    loggingResolution = Resolution.OFF,
+                    monitoringResolution = Resolution.OFF,
+                )
+                is SelinuxViolationMarMetadata -> MarManifest(
+                    collectionTime = collectionTime,
+                    type = "android-selinux",
                     device = device,
                     metadata = metadata,
                     debuggingResolution = Resolution.NORMAL,

@@ -2,6 +2,7 @@ package com.memfault.bort.dropbox
 
 import android.os.DropBoxManager
 import com.memfault.bort.parsers.JavaExceptionParser
+import com.memfault.bort.settings.OperationalCrashesExclusions
 import com.memfault.bort.tokenbucket.JavaException
 import com.memfault.bort.tokenbucket.TokenBucketStore
 import com.memfault.bort.tokenbucket.Wtf
@@ -14,6 +15,7 @@ class JavaExceptionUploadingEntryProcessorDelegate @Inject constructor(
     @JavaException private val javaExceptionTokenBucketStore: TokenBucketStore,
     @Wtf private val wtfTokenBucketStore: TokenBucketStore,
     @WtfTotal private val wtfTotalTokenBucketStore: TokenBucketStore,
+    private val operationalCrashesExclusions: OperationalCrashesExclusions,
 ) : UploadingEntryProcessorDelegate {
     override val tags = listOf(
         "data_app_crash",
@@ -27,7 +29,7 @@ class JavaExceptionUploadingEntryProcessorDelegate @Inject constructor(
         get() = "UPLOAD_JAVA_EXCEPTION"
 
     override fun allowedByRateLimit(tokenBucketKey: String, tag: String): Boolean {
-        return if (tag.endsWith("wtf")) {
+        return if (isWtf(tag)) {
             // We limit WTFs using both a bucketed (by stacktrace) and total.
             val allowedByBucketed = wtfTokenBucketStore.allowedByRateLimit(tokenBucketKey = tokenBucketKey, tag = tag)
             // Don't also take from the total bucket if we aren't uploading.
@@ -51,4 +53,16 @@ class JavaExceptionUploadingEntryProcessorDelegate @Inject constructor(
         } catch (e: Exception) {
             EntryInfo(entry.tag)
         }
+
+    override fun isCrash(entry: DropBoxManager.Entry, entryFile: File): Boolean {
+        if (entry.tag in operationalCrashesExclusions()) {
+            return false
+        }
+
+        return !isWtf(entry.tag)
+    }
+
+    companion object {
+        private fun isWtf(tag: String): Boolean = tag.endsWith("wtf")
+    }
 }

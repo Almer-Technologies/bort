@@ -1,6 +1,8 @@
 package com.memfault.bort
 
+import android.content.Context
 import android.os.Build
+import android.provider.Settings.Secure
 import com.memfault.bort.settings.AndroidBuildFormat
 
 const val SOFTWARE_TYPE = "android-build"
@@ -10,18 +12,21 @@ data class DeviceInfoParams(
     val androidBuildVersionKey: String,
     val androidHardwareVersionKey: String,
     val androidSerialNumberKey: String,
+    val overriddenSerialNumber: String?,
 )
 
 data class DeviceInfo(
     val deviceSerial: String,
     val hardwareVersion: String,
-    val softwareVersion: String
+    val softwareVersion: String,
 ) {
     companion object {
         fun fromSettingsAndSystemProperties(
             settings: DeviceInfoParams,
             props: Map<String, String>,
-            getBuildFingerprint: () -> String = { Build.FINGERPRINT }
+            context: Context,
+            getBuildFingerprint: () -> String = { Build.FINGERPRINT },
+            getFallbackAndroidId: () -> String = { Secure.getString(context.contentResolver, Secure.ANDROID_ID) },
         ): DeviceInfo {
             val softwareVersion = when (settings.androidBuildFormat) {
                 AndroidBuildFormat.SYSTEM_PROPERTY_ONLY -> props[settings.androidBuildVersionKey] ?: "unknown"
@@ -30,9 +35,9 @@ data class DeviceInfo(
                     "${getBuildFingerprint()}::${props[settings.androidBuildVersionKey] ?: "unknown"}"
             }
             return DeviceInfo(
-                props[settings.androidSerialNumberKey] ?: "unknown",
+                settings.overriddenSerialNumber ?: props[settings.androidSerialNumberKey] ?: getFallbackAndroidId(),
                 hardwareVersionFromSettingsAndSystemProperties(settings, props),
-                softwareVersion
+                softwareVersion,
             )
         }
 
@@ -43,7 +48,7 @@ data class DeviceInfo(
 
         fun hardwareVersionFromSettingsAndSystemProperties(
             settings: DeviceInfoParams,
-            props: Map<String, String>
+            props: Map<String, String>,
         ): String =
             settings.androidHardwareVersionKey.let { key ->
                 if (key != "") {

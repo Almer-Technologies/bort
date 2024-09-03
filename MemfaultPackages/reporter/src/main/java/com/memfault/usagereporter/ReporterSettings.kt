@@ -4,38 +4,25 @@ import android.content.SharedPreferences
 import com.memfault.bort.shared.Logger
 import com.memfault.bort.shared.PreferenceKeyProvider
 import com.memfault.bort.shared.SetReporterSettingsRequest
+import com.squareup.anvil.annotations.ContributesBinding
+import dagger.hilt.components.SingletonComponent
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.time.Duration
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.emptyFlow
-import kotlinx.coroutines.flow.flatMapLatest
-import kotlinx.coroutines.flow.map
 
 interface ReporterSettings {
     val maxFileTransferStorageBytes: Long
     val maxFileTransferStorageAge: Duration
     val maxReporterTempStorageBytes: Long
     val maxReporterTempStorageAge: Duration
+
+    val settings: StateFlow<SetReporterSettingsRequest>
 }
 
-/**
- * Returns a Flow that subscribes to the [onBortEnabledFlow] if Bort is enabled, otherwise doesn't emit.
- */
-fun <T> StateFlow<SetReporterSettingsRequest>.onBortEnabledFlow(
-    logName: String,
-    bortEnabledFlow: suspend () -> Flow<T>
-) = map { it.bortEnabled }
-    .distinctUntilChanged()
-    .flatMapLatest { bortEnabled ->
-        Logger.test("Listening for $logName: $bortEnabled")
-        if (bortEnabled) bortEnabledFlow() else emptyFlow()
-    }
-
 @Singleton
+@ContributesBinding(SingletonComponent::class, boundType = ReporterSettings::class)
 class ReporterSettingsPreferenceProvider
 @Inject constructor(
     sharedPreferences: SharedPreferences,
@@ -48,10 +35,10 @@ class ReporterSettingsPreferenceProvider
     private val _settings = MutableStateFlow(
         SetReporterSettingsRequest.fromJson(getValue())
             // Use default values if never stored
-            ?: SetReporterSettingsRequest()
+            ?: SetReporterSettingsRequest(),
     )
 
-    val settings: StateFlow<SetReporterSettingsRequest> = _settings
+    override val settings: StateFlow<SetReporterSettingsRequest> = _settings
 
     fun set(settings: SetReporterSettingsRequest) {
         if (_settings.value == settings) return

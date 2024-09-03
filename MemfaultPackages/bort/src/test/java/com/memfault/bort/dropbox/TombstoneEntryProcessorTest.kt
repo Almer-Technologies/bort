@@ -7,28 +7,26 @@ import com.memfault.bort.PackageNameAllowList
 import com.memfault.bort.clientserver.MarMetadata
 import com.memfault.bort.logcat.FakeNextLogcatCidProvider
 import com.memfault.bort.metrics.BuiltinMetricsStore
-import com.memfault.bort.parsers.EXAMPLE_NATIVE_BACKTRACE
+import com.memfault.bort.metrics.CrashHandler
 import com.memfault.bort.parsers.EXAMPLE_TOMBSTONE
 import com.memfault.bort.parsers.Package
+import com.memfault.bort.parsers.PackageManagerReport
 import com.memfault.bort.test.util.TestTemporaryFileFactory
 import com.memfault.bort.time.BaseBootRelativeTime
 import com.memfault.bort.uploader.EnqueueUpload
 import com.memfault.bort.uploader.HandleEventOfInterest
 import io.mockk.CapturingSlot
-import io.mockk.clearMocks
 import io.mockk.coEvery
+import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.slot
-import io.mockk.verify
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
-import org.junit.jupiter.api.DynamicTest
 import org.junit.jupiter.api.Test
-import org.junit.jupiter.api.TestFactory
 
 class TombstoneEntryProcessorTest {
     lateinit var processor: UploadingEntryProcessor<TombstoneUploadingEntryProcessorDelegate>
@@ -38,6 +36,7 @@ class TombstoneEntryProcessorTest {
     lateinit var builtInMetricsStore: BuiltinMetricsStore
     lateinit var mockHandleEventOfInterest: HandleEventOfInterest
     lateinit var mockPackageNameAllowList: PackageNameAllowList
+    lateinit var crashHandler: CrashHandler
     private var allowedByRateLimit = true
 
     @BeforeEach
@@ -46,15 +45,16 @@ class TombstoneEntryProcessorTest {
         mockHandleEventOfInterest = mockk(relaxed = true)
 
         marMetadataSlot = slot()
-        every {
+        coEvery {
             mockEnqueueUpload.enqueue(any(), capture(marMetadataSlot), any())
-        } returns Unit
+        } returns Result.success(mockk())
 
         mockPackageManagerClient = mockk()
         builtInMetricsStore = BuiltinMetricsStore()
         mockPackageNameAllowList = mockk {
             every { contains(any()) } returns true
         }
+        crashHandler = mockk(relaxed = true)
         processor = UploadingEntryProcessor(
             delegate = TombstoneUploadingEntryProcessorDelegate(
                 packageManagerClient = mockPackageManagerClient,
@@ -63,6 +63,7 @@ class TombstoneEntryProcessorTest {
                 },
                 tempFileFactory = TestTemporaryFileFactory,
                 scrubTombstones = { false },
+                operationalCrashesExclusions = { emptyList() },
             ),
             tempFileFactory = TestTemporaryFileFactory,
             enqueueUpload = mockEnqueueUpload,
@@ -72,91 +73,71 @@ class TombstoneEntryProcessorTest {
             handleEventOfInterest = mockHandleEventOfInterest,
             packageNameAllowList = mockPackageNameAllowList,
             combinedTimeProvider = FakeCombinedTimeProvider,
+            crashHandler = crashHandler,
         )
     }
 
-    @TestFactory
-    fun enqueuesFileWithPackageInfo() = listOf(
-        Triple("native backtrace", EXAMPLE_NATIVE_BACKTRACE, "foo"),
-        Triple("tombstone", EXAMPLE_TOMBSTONE, "com.android.chrome"),
-    ).map { (name, text, expectedProcessName) ->
-        DynamicTest.dynamicTest("enqueuesFileWithPackageInfo for $name") {
-            // @BeforeEach doesn't work with DynamicTest... :/
-            clearMocks(mockHandleEventOfInterest)
-
-            coEvery {
-                mockPackageManagerClient.findPackagesByProcessName(expectedProcessName)
-            } returns PACKAGE_FIXTURE
-            runBlocking {
-                processor.process(mockEntry(text = text))
-                val metadata = marMetadataSlot.captured as MarMetadata.DropBoxMarMetadata
-                assertEquals(listOf(PACKAGE_FIXTURE.toUploaderPackage()), metadata.packages)
-                verify(exactly = 1) { mockHandleEventOfInterest.handleEventOfInterest(any<BaseBootRelativeTime>()) }
-            }
-        }
-    }
-
     @Test
-    fun enqueuesFileThatFailedToParseWithoutPackageInfo() {
-        // Even though Bort's parsing failed to parse out the processName, ensure it's uploaded it anyway:
-        runBlocking {
-            processor.process(mockEntry(text = "not_empty_but_invalid"))
-            val metadata = marMetadataSlot.captured as MarMetadata.DropBoxMarMetadata
-            assertTrue(metadata.packages.isEmpty())
-        }
-    }
-
-    @Test
-    fun rateLimiting() {
+    fun enqueuesFileWithPackageInfo() = runTest {
         coEvery {
-            mockPackageManagerClient.findPackagesByProcessName(any())
-        } returns PACKAGE_FIXTURE
+            mockPackageManagerClient.getPackageManagerReport()
+        } returns PackageManagerReport(listOf(PACKAGE_FIXTURE))
+        processor.process(mockEntry(text = EXAMPLE_TOMBSTONE))
+        val metadata = marMetadataSlot.captured as MarMetadata.DropBoxMarMetadata
+        assertEquals(listOf(PACKAGE_FIXTURE.toUploaderPackage()), metadata.packages)
+        coVerify(exactly = 1) { mockHandleEventOfInterest.handleEventOfInterest(any<BaseBootRelativeTime>()) }
+    }
 
-        runBlocking {
-            allowedByRateLimit = true
-            processor.process(mockEntry(text = EXAMPLE_TOMBSTONE, tag_ = "SYSTEM_TOMBSTONE"))
-            allowedByRateLimit = false
-            processor.process(mockEntry(text = EXAMPLE_TOMBSTONE, tag_ = "SYSTEM_TOMBSTONE"))
-            verify(exactly = 1) { mockEnqueueUpload.enqueue(any(), any(), any()) }
-            verify(exactly = 1) {
-                mockHandleEventOfInterest.handleEventOfInterest(any<BaseBootRelativeTime>())
-            }
+    @Test
+    fun enqueuesFileThatFailedToParseWithoutPackageInfo() = runTest {
+        // Even though Bort's parsing failed to parse out the processName, ensure it's uploaded it anyway:
+        processor.process(mockEntry(text = "not_empty_but_invalid"))
+        val metadata = marMetadataSlot.captured as MarMetadata.DropBoxMarMetadata
+        assertTrue(metadata.packages.isEmpty())
+    }
+
+    @Test
+    fun rateLimiting() = runTest {
+        coEvery {
+            mockPackageManagerClient.getPackageManagerReport()
+        } returns PackageManagerReport(listOf(PACKAGE_FIXTURE))
+
+        allowedByRateLimit = true
+        processor.process(mockEntry(text = EXAMPLE_TOMBSTONE, tag_ = "SYSTEM_TOMBSTONE"))
+        allowedByRateLimit = false
+        processor.process(mockEntry(text = EXAMPLE_TOMBSTONE, tag_ = "SYSTEM_TOMBSTONE"))
+        coVerify(exactly = 1) { mockEnqueueUpload.enqueue(any(), any(), any()) }
+        coVerify(exactly = 1) {
+            mockHandleEventOfInterest.handleEventOfInterest(any<BaseBootRelativeTime>())
         }
     }
 
     @Test
-    fun doesNotEnqueueWhenNotAllowed() {
+    fun doesNotEnqueueWhenNotAllowed() = runTest {
         every { mockPackageNameAllowList.contains(any()) } returns false
 
-        runBlocking {
-            processor.process(mockEntry(text = "not_empty_but_invalid"))
-            assertFalse(marMetadataSlot.isCaptured)
-        }
+        processor.process(mockEntry(text = "not_empty_but_invalid"))
+        assertFalse(marMetadataSlot.isCaptured)
     }
 
     @Test
-    fun doesNotEnqueueWhenEmpty() {
-        runBlocking {
-            processor.process(mockEntry(text = ""))
-            assertFalse(marMetadataSlot.isCaptured)
-        }
+    fun doesNotEnqueueWhenEmpty() = runTest {
+        processor.process(mockEntry(text = ""))
+        assertFalse(marMetadataSlot.isCaptured)
     }
 
     @Test
-    fun nullEntryInputStream() {
+    fun nullEntryInputStream() = runTest {
         val entry = mockEntry(text = "not_empty_but_invalid")
         every { entry.getInputStream() } returns null
-        runBlocking {
-            // Used to raise an exception, but should not!
-            processor.process(entry)
-        }
+        // Used to raise an exception, but should not!
+        processor.process(entry)
     }
 }
 
 private val PACKAGE_FIXTURE = Package(
-    id = "com.android.chrome",
+    id = "com.android",
     userId = 1000,
-    codePath = "/data/app.apk",
     versionCode = 1,
-    versionName = "1.0.0"
+    versionName = "1.0.0",
 )

@@ -9,18 +9,19 @@ import com.memfault.bort.test.util.TestTemporaryFileFactory
 import com.memfault.bort.time.CombinedTime
 import com.memfault.bort.uploader.EnqueueUpload
 import io.mockk.CapturingSlot
+import io.mockk.coEvery
+import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.slot
-import io.mockk.verify
-import java.util.UUID
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.runTest
 import org.junit.Before
 import org.junit.Test
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import java.util.UUID
 
 /**
  * Using robolectric because of a parser dependency in android.util.JsonReader/Writer
@@ -44,9 +45,9 @@ class CustomEventEntryProcessorTest {
 
         marMetadataSlot = slot()
         collectionTimeSlot = slot()
-        every {
+        coEvery {
             mockEnqueueUpload.enqueue(any(), capture(marMetadataSlot), capture(collectionTimeSlot))
-        } returns Unit
+        } returns Result.success(mockk())
         builtInMetricsStore = BuiltinMetricsStore()
 
         processor = StructuredLogEntryProcessor(
@@ -62,37 +63,29 @@ class CustomEventEntryProcessorTest {
     }
 
     @Test
-    fun enqueues() {
-        runBlocking {
-            val info = FakeDeviceInfoProvider().getDeviceInfo()
+    fun enqueues() = runTest {
+        processor.process(mockEntry(text = VALID_STRUCTURED_LOG_FIXTURE))
+        val metadata = marMetadataSlot.captured as MarMetadata.StructuredLogMarMetadata
+        assertEquals(LogcatCollectionId(UUID.fromString("00000000-0000-0000-0000-000000000002")), metadata.cid)
+        assertEquals(LogcatCollectionId(UUID.fromString("00000000-0000-0000-0000-000000000003")), metadata.nextCid)
+        assertEquals(FakeCombinedTimeProvider.now(), collectionTimeSlot.captured)
+    }
 
-            processor.process(mockEntry(text = VALID_STRUCTURED_LOG_FIXTURE))
-            val metadata = marMetadataSlot.captured as MarMetadata.StructuredLogMarMetadata
-            assertEquals(LogcatCollectionId(UUID.fromString("00000000-0000-0000-0000-000000000002")), metadata.cid)
-            assertEquals(LogcatCollectionId(UUID.fromString("00000000-0000-0000-0000-000000000003")), metadata.nextCid)
-            assertEquals(FakeCombinedTimeProvider.now(), collectionTimeSlot.captured)
+    @Test
+    fun rateLimiting() = runTest {
+        allowedByRateLimit = true
+        processor.process(mockEntry(text = VALID_STRUCTURED_LOG_FIXTURE, tag_ = "memfault_structured"))
+        allowedByRateLimit = false
+        processor.process(mockEntry(text = VALID_STRUCTURED_LOG_FIXTURE, tag_ = "memfault_structured"))
+        coVerify(exactly = 1) {
+            mockEnqueueUpload.enqueue(any(), any(), any())
         }
     }
 
     @Test
-    fun rateLimiting() {
-        runBlocking {
-            allowedByRateLimit = true
-            processor.process(mockEntry(text = VALID_STRUCTURED_LOG_FIXTURE, tag_ = "memfault_structured"))
-            allowedByRateLimit = false
-            processor.process(mockEntry(text = VALID_STRUCTURED_LOG_FIXTURE, tag_ = "memfault_structured"))
-            verify(exactly = 1) {
-                mockEnqueueUpload.enqueue(any(), any(), any())
-            }
-        }
-    }
-
-    @Test
-    fun noProcessingWhenDataSourceDisabled() {
+    fun noProcessingWhenDataSourceDisabled() = runTest {
         dataSourceEnabled = false
-        runBlocking {
-            processor.process(mockEntry(text = VALID_STRUCTURED_LOG_FIXTURE, tag_ = "memfault_structured"))
-            verify(exactly = 0) { mockEnqueueUpload.enqueue(any(), any(), any()) }
-        }
+        processor.process(mockEntry(text = VALID_STRUCTURED_LOG_FIXTURE, tag_ = "memfault_structured"))
+        coVerify(exactly = 0) { mockEnqueueUpload.enqueue(any(), any(), any()) }
     }
 }

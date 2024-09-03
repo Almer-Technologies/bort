@@ -2,11 +2,11 @@ package com.memfault.bort.time
 
 import com.squareup.anvil.annotations.ContributesBinding
 import dagger.hilt.components.SingletonComponent
+import kotlinx.serialization.Serializable
 import java.time.Instant
 import javax.inject.Inject
 import kotlin.time.Duration
 import kotlin.time.toJavaDuration
-import kotlinx.serialization.Serializable
 
 interface BaseAbsoluteTime {
     /**
@@ -26,7 +26,7 @@ data class AbsoluteTime(
      * RTC timestamp, formatted as ISO-8601 string when serialized.
      */
     @Serializable(with = InstantAsIso8601String::class)
-    override val timestamp: Instant
+    override val timestamp: Instant,
 ) : BaseAbsoluteTime {
     constructor(time: BaseAbsoluteTime) : this(time.timestamp)
 
@@ -42,10 +42,8 @@ class RealAbsoluteTimeProvider @Inject constructor() : AbsoluteTimeProvider {
     override fun invoke(): AbsoluteTime = AbsoluteTime.now()
 }
 
-fun Long.toAbsoluteTime() = AbsoluteTime(
-    Instant.ofEpochMilli(this)
-)
+fun Instant.toAbsoluteTime(): AbsoluteTime =
+    AbsoluteTime(this)
 
-fun Duration.toAbsoluteTime() = AbsoluteTime(
-    Instant.ofEpochMilli(this.inWholeMilliseconds)
-)
+fun Long.toAbsoluteTime(): AbsoluteTime =
+    Instant.ofEpochMilli(this).toAbsoluteTime()

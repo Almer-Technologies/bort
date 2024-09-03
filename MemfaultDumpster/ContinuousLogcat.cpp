@@ -22,7 +22,6 @@
 
 namespace memfault {
 
-static constexpr char kMetricReportName[] = "Heartbeat";
 static constexpr char kLogBufferExpiredCounterName[] = "log_buffer_expired_counter";
 
 ContinuousLogcat::ContinuousLogcat() :
@@ -30,8 +29,7 @@ ContinuousLogcat::ContinuousLogcat() :
     log_format(nullptr, android_log_format_free),
     total_bytes_written(0),
     last_collection_uptime_ms(android::uptimeMillis()) {
-
-  report_ = std::make_unique<Report>(kMetricReportName);
+  report_ = std::make_unique<Report>();
   log_buffer_expired_counter_ = report_->counter(kLogBufferExpiredCounterName);
   // Compute the list of buffers we want to read from. Buffers
   // may vary between platform versions we use the liblog API
@@ -54,15 +52,16 @@ ContinuousLogcat::ContinuousLogcat() :
   }
 
   config.restore_config();
+  rebuild_log_format(config.filter_specs());
   if (config.started()) {
-    this->start();
+    this->start(true /* start_from_previous_config */);
   }
 }
 
-void ContinuousLogcat::start() {
+void ContinuousLogcat::start(bool start_from_previous_config) {
   std::lock_guard<std::mutex> lock(log_lock);
   ALOGT("clog: start (running=%d)", config.started());
-  if (!config.started()) {
+  if (!config.started() || start_from_previous_config) {
     output_fd = creat(CONTINUOUS_LOGCAT_FILE, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
     output_fp = fdopen(output_fd, "w");
     config.set_started(true);
@@ -75,6 +74,30 @@ void ContinuousLogcat::start() {
   }
 }
 
+void ContinuousLogcat::interrupt_reader_thread() {
+#if PLATFORM_SDK_VERSION >= 30
+  // On Android 11+, close the LogD filedescriptor associated with the
+  // logger list before interrupting, otherwise logd_reader will be stuck
+  // in a read loop.
+  auto ptr = logger_list.get();
+  if (ptr) {
+    LogdClose(ptr);
+  }
+#endif
+
+  // Send a SIGALRM so that the blocked reader in liblog returns
+  // with -EINTR, we then handle that result in the reader loop.
+  pthread_kill(reader_thread.native_handle(), SIGALRM);
+}
+
+void ContinuousLogcat::request_dump() {
+  std::lock_guard<std::mutex> lock(log_lock);
+  ALOGT("clog: dumping requested by external caller");
+  if (config.started()) {
+    interrupt_reader_thread();
+  }
+}
+
 void ContinuousLogcat::stop() {
   std::lock_guard<std::mutex> lock(log_lock);
   ALOGT("clog: stop (running=%d)", config.started());
@@ -82,19 +105,7 @@ void ContinuousLogcat::stop() {
     config.set_started(false);
     config.persist_config();
 
-#if PLATFORM_SDK_VERSION >= 30
-    // On Android 11+, close the LogD filedescriptor associated with the
-    // logger list before interrupting, otherwise logd_reader will be stuck
-    // in a read loop.
-    auto ptr = logger_list.get();
-    if (ptr) {
-      LogdClose(ptr);
-    }
-#endif
-
-    // Send a SIGALRM so that the blocked reader in liblog returns
-    // with -EINTR, we then handle that result in the reader loop.
-    pthread_kill(reader_thread.native_handle(), SIGALRM);
+    interrupt_reader_thread();
   }
 }
 
@@ -106,6 +117,16 @@ void ContinuousLogcat::reconfigure(
   std::lock_guard<std::mutex> lock(log_lock);
   ALOGT("clog: reconfiguring");
 
+  rebuild_log_format(filter_specs);
+
+  config.set_filter_specs(filter_specs);
+  config.set_dump_threshold_bytes(dump_threshold_bytes);
+  config.set_dump_threshold_time_ms(dump_threshold_time_ms);
+  config.set_dump_wrapping_timeout_ms(dump_wrapping_timeout_ms);
+  config.persist_config();
+}
+
+void ContinuousLogcat::rebuild_log_format(const std::vector<std::string>& filter_specs) {
   // readers receive all the logs and decide how to format them through a log_format object
   // log_format controls:
   // - Output formats (i.e. time spec, whether to print nanoseconds, etc)
@@ -134,14 +155,9 @@ void ContinuousLogcat::reconfigure(
 
   // add filters
   for (auto &filter : filter_specs) {
+    ALOGT("clog: filter: %s", filter.c_str());
     android_log_addFilterString(log_format.get(), filter.c_str());
   }
-
-  config.set_filter_specs(filter_specs);
-  config.set_dump_threshold_bytes(dump_threshold_bytes);
-  config.set_dump_threshold_time_ms(dump_threshold_time_ms);
-  config.set_dump_wrapping_timeout_ms(dump_wrapping_timeout_ms);
-  config.persist_config();
 }
 
 void ContinuousLogcat::join() {
@@ -168,7 +184,10 @@ void ContinuousLogcat::run() {
 
         // Send a SIGALRM so that the blocked reader in liblog returns
         // with -EINTR, we then handle that result in the reader loop.
-        pthread_kill(reader_thread.native_handle(), SIGALRM);
+        std::lock_guard<std::mutex> lock(log_lock);
+        if (config.started()) {
+          interrupt_reader_thread();
+        }
       }
   );
 
@@ -198,7 +217,7 @@ void ContinuousLogcat::run() {
     // don't block when the buffer ends (equivalent to logcat -d), this does not prevent blocking in wrapping scenarios
     int log_mode = ANDROID_LOG_NONBLOCK;
 
-    // if we are not doing an inmmediate dump, use wrapping behavior
+    // if we are not doing an immediate dump, use wrapping behavior
     if (!dump_after_intr) {
       log_mode |= ANDROID_LOG_WRAP;
     }
@@ -224,7 +243,7 @@ void ContinuousLogcat::run() {
       // Read a log entry, this will run once per log line.
       int ret = android_logger_list_read(logger_list.get(), &log_msg);
 
-      if (ret == -EBADF) {
+      if (ret == -EBADF || ret == -EAGAIN) {
         ALOGT("clog: interrupted via stop signal, will dump");
         dump_after_intr = true;
 
@@ -256,6 +275,13 @@ void ContinuousLogcat::run() {
 #endif
       if (err < 0) {
         ALOGE("error processing line: %d\n", err);
+        continue;
+      }
+
+      // Force-checked if line should be printed, in some android
+      // versions, the filters are not passed to the logd backend
+      // so we need to recheck them
+      if (!android_log_shouldPrintLine(log_format.get(), entry.tag, entry.priority)) {
         continue;
       }
 

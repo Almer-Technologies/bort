@@ -3,11 +3,15 @@ package com.memfault.bort
 import android.content.Context
 import android.content.SharedPreferences
 import com.memfault.bort.clientserver.MarBatchingTask.Companion.enqueueOneTimeBatchMarFiles
+import com.memfault.bort.receivers.DropBoxEntryAddedReceiver
 import com.memfault.bort.reporting.Reporting
 import com.memfault.bort.reporting.StateAgg
+import com.memfault.bort.requester.PeriodicWorkRequester.PeriodicWorkManager
+import com.memfault.bort.settings.BortEnabledProvider
 import com.memfault.bort.shared.CachedPreferenceKeyProvider
 import com.memfault.bort.shared.Logger
 import com.squareup.anvil.annotations.ContributesBinding
+import dagger.Lazy
 import dagger.hilt.components.SingletonComponent
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -23,9 +27,14 @@ import javax.inject.Singleton
 @ContributesBinding(SingletonComponent::class)
 class RealDevMode @Inject constructor(
     private val devModePreferenceProvider: DevModePreferenceProvider,
+    private val dropBoxEntryAddedReceiver: Lazy<DropBoxEntryAddedReceiver>,
+    private val periodicWorkManager: Lazy<PeriodicWorkManager>,
+    private val bortEnabledProvider: Lazy<BortEnabledProvider>,
 ) : DevMode {
-    fun setEnabled(newEnabled: Boolean, context: Context) {
-        Logger.d("Dev mode = $newEnabled")
+    suspend fun setEnabled(
+        newEnabled: Boolean,
+        context: Context,
+    ) {
         devModePreferenceProvider.setValue(newEnabled)
         updateMetric()
         if (newEnabled) {
@@ -33,6 +42,13 @@ class RealDevMode @Inject constructor(
             // mode is enabled).
             enqueueOneTimeBatchMarFiles(context = context)
         }
+        // Ensure that the mar batching task is rescheduled, if required.
+        periodicWorkManager.get().scheduleTasksAfterBootOrEnable(
+            bortEnabled = bortEnabledProvider.get().isEnabled(),
+            justBooted = false,
+        )
+        dropBoxEntryAddedReceiver.get().initialize()
+        Logger.d("Dev mode = $newEnabled")
     }
 
     override fun updateMetric() {

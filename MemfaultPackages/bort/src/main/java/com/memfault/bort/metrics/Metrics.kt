@@ -10,10 +10,10 @@ import com.memfault.bort.parsers.Package
 import com.memfault.bort.reporting.NumericAgg
 import com.memfault.bort.reporting.Reporting
 import com.memfault.bort.shared.APPLICATION_ID_MEMFAULT_USAGE_REPORTER
-import com.memfault.bort.shared.BuildConfig as SharedBuildConfig
+import kotlinx.serialization.json.JsonPrimitive
 import java.util.Locale
 import javax.inject.Inject
-import kotlinx.serialization.json.JsonPrimitive
+import com.memfault.bort.shared.BuildConfig as SharedBuildConfig
 
 const val BORT_CRASH = "bort_crash"
 const val BORT_STARTED = "bort_started"
@@ -58,7 +58,7 @@ class BuiltinMetricsStore @Inject constructor() {
         Reporting.report().distribution(
             name = name,
             aggregations = listOf(NumericAgg.COUNT, NumericAgg.MIN, NumericAgg.MAX, NumericAgg.SUM),
-            internal = true
+            internal = true,
         ).record(value)
     }
 
@@ -66,19 +66,19 @@ class BuiltinMetricsStore @Inject constructor() {
         Reporting.report().distribution(
             name = name,
             aggregations = listOf(NumericAgg.COUNT, NumericAgg.MIN, NumericAgg.MAX, NumericAgg.SUM),
-            internal = true
+            internal = true,
         ).record(value)
     }
 }
 
 fun metricForTraceTag(tag: String) = DROP_BOX_TRACE_TAG_COUNT_PER_HOUR_TEMPLATE
-    .format(tag.toLowerCase(Locale.ROOT))
+    .format(tag.lowercase(Locale.ROOT))
 
 private var cachedReporterVersion: Package? = null
 private var cachedDumpsterVersion: Int? = null
 
 private suspend fun PackageManagerClient.getUsageReporterVersion(): Package? = cachedReporterVersion
-    ?: findPackageByApplicationId(APPLICATION_ID_MEMFAULT_USAGE_REPORTER)?.also {
+    ?: getPackageManagerReport().findByPackage(APPLICATION_ID_MEMFAULT_USAGE_REPORTER)?.also {
         cachedReporterVersion = it
     }
 
@@ -154,5 +154,5 @@ suspend fun updateBuiltinProperties(
     metrics[BORT_PACKAGE_NAME] = JsonPrimitive(BuildConfig.APPLICATION_ID)
     devicePropertiesStore.upsert(name = BORT_PACKAGE_NAME, value = BuildConfig.APPLICATION_ID, internal = true)
 
-    return metrics + integrationChecker.checkIntegrationAndReport()
+    return metrics + integrationChecker.checkIntegrationAndReport(devicePropertiesStore)
 }

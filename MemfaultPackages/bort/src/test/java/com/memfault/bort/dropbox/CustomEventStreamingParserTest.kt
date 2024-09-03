@@ -2,18 +2,16 @@ package com.memfault.bort.dropbox
 
 import com.memfault.bort.FakeDeviceInfoProvider
 import com.memfault.bort.LogcatCollectionId
-import java.io.ByteArrayOutputStream
-import java.util.UUID
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.runTest
 import org.junit.Test
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.assertThrows
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import java.io.ByteArrayOutputStream
+import java.util.UUID
 
-@RunWith(RobolectricTestRunner::class)
-@Config(manifest = Config.NONE)
 /**
  * Note: This test uses Robolectric because the implementation uses android.util.JsonReader/JsonWriter in order to
  * process and enrich JSON output in a single pass and avoiding memory usage that grows with the number of events.
@@ -23,9 +21,11 @@ import org.robolectric.annotation.Config
  * Note: Robolectric does not support Junit5 yet, please port this to junit/jupiter when it does.
  * https://github.com/robolectric/robolectric/issues/3477
  */
+@RunWith(RobolectricTestRunner::class)
+@Config(manifest = Config.NONE)
 class StructuredLogStreamingParserTest {
     @Test
-    fun happyPath() {
+    fun happyPath() = runTest {
         val input = VALID_STRUCTURED_LOG_FIXTURE
 
         val (output, metadata) = parse(input)
@@ -42,8 +42,9 @@ class StructuredLogStreamingParserTest {
                 |"device_serial":"SN1234",
                 |"software_version":"1.0.0",
                 |"hardware_version":"HW-FOO"
-                |}""".trimMargin().replace("\n", ""),
-            output
+                |}
+            """.trimMargin().replace("\n", ""),
+            output,
         )
 
         assertEquals(
@@ -51,25 +52,25 @@ class StructuredLogStreamingParserTest {
                 schemaVersion = 1,
                 cid = LogcatCollectionId(UUID.fromString("00000000-0000-0000-0000-000000000002")),
                 nextCid = LogcatCollectionId(UUID.fromString("00000000-0000-0000-0000-000000000003")),
-                linuxBootId = UUID.fromString("00000000-0000-0000-0000-000000000001")
+                linuxBootId = UUID.fromString("00000000-0000-0000-0000-000000000001"),
             ),
-            metadata
+            metadata,
         )
     }
 
     @Test
-    fun emptyThrows() {
+    fun emptyThrows() = runTest {
         assertThrows<StructuredLogParseException> { parse("{}") }
     }
 
     @Test
-    fun invalidThrows() {
+    fun invalidThrows() = runTest {
         assertThrows<StructuredLogParseException> { parse("shall not pass") }
     }
 
-    private fun parse(json: String): Pair<String, StructuredLogMetadata> {
+    private suspend fun parse(json: String): Pair<String, StructuredLogMetadata> {
         val output = ByteArrayOutputStream()
-        val deviceInfo = runBlocking { FakeDeviceInfoProvider().getDeviceInfo() }
+        val deviceInfo = FakeDeviceInfoProvider().getDeviceInfo()
         val metadata = StructuredLogStreamingParser(json.byteInputStream(), output, deviceInfo)
             .parse()
         return Pair(output.toString(), metadata)

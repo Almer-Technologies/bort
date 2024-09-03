@@ -4,14 +4,8 @@ import android.content.Context
 import android.os.Process
 import android.util.EventLog
 import android.util.Log
-import com.memfault.bort.internal.ILogger
-import com.memfault.bort.reporting.CustomEvent
 import com.memfault.bort.reporting.Reporting
 import com.memfault.bort.shared.LogLevel.Companion.tag
-import java.io.File
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -21,6 +15,10 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONException
 import org.json.JSONObject
+import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 enum class LogLevel(val level: Int) {
     NONE(0),
@@ -29,7 +27,8 @@ enum class LogLevel(val level: Int) {
     INFO(3),
     DEBUG(4),
     VERBOSE(5),
-    TEST(6);
+    TEST(6),
+    ;
 
     companion object {
         fun fromInt(level: Int) = values().firstOrNull { it.level == level }
@@ -66,6 +65,7 @@ object Logger {
         minStructuredLevel = LogLevel.NONE,
         hrtEnabled = false,
     )
+
     /**
      * All uses of logFile should be holding [logFileLock].
      */
@@ -117,7 +117,7 @@ object Logger {
     fun e(message: String, t: Throwable? = null) = logcat(
         LogLevel.ERROR,
         message,
-        t
+        t,
     )
 
     @JvmStatic
@@ -132,7 +132,7 @@ object Logger {
     fun w(message: String, t: Throwable? = null) = logcat(
         LogLevel.WARN,
         message,
-        t
+        t,
     )
 
     @JvmStatic
@@ -147,7 +147,7 @@ object Logger {
     fun i(message: String, t: Throwable? = null) = logcat(
         LogLevel.INFO,
         message,
-        t
+        t,
     )
 
     @JvmStatic
@@ -162,7 +162,7 @@ object Logger {
     fun d(message: String, t: Throwable? = null) = logcat(
         LogLevel.DEBUG,
         message,
-        t
+        t,
     )
 
     @JvmStatic
@@ -177,7 +177,7 @@ object Logger {
     fun v(message: String, t: Throwable? = null) = logcat(
         LogLevel.VERBOSE,
         message,
-        t
+        t,
     )
 
     @JvmStatic
@@ -193,7 +193,7 @@ object Logger {
         logcat(
             LogLevel.TEST,
             message,
-            t
+            t,
         )
 
     private fun logcat(level: LogLevel, message: String, t: Throwable? = null) {
@@ -227,7 +227,12 @@ object Logger {
         appendText("$timestamp $process-$thread ${level.tag()}/$TAG: $message$throwable\n")
     }
 
-    private fun writeEvent(level: LogLevel, tag: String, payload: Map<String, Any>, t: Throwable? = null) {
+    private fun writeEvent(
+        level: LogLevel,
+        tag: String,
+        payload: Map<String, Any>,
+        t: Throwable? = null,
+    ) {
         logcat(level, "$tag: $payload", t)
         if (level > settings.minStructuredLevel) return
         val jsonObject = JSONObject(payload)
@@ -235,17 +240,9 @@ object Logger {
         t?.let { jsonObject.put("throwable", JSONArray(it.stackTraceToString().lines().take(5))) }
         // Don't crash if we were passed invalid json
         try {
-            writeMetricEventOrStructuredLog(tag, jsonObject.toString())
+            writeInternalMetricEvent(tag, jsonObject.toString())
         } catch (e: JSONException) {
-            writeMetricEventOrStructuredLog("error.logging.$tag", payload.toString())
-        }
-    }
-
-    private fun writeMetricEventOrStructuredLog(tag: String, message: String) {
-        if (settings.hrtEnabled) {
-            writeInternalMetricEvent(tag, message)
-        } else {
-            writeInternalStructuredLog(tag, message)
+            writeInternalMetricEvent("error.logging.$tag", payload.toString())
         }
     }
 
@@ -254,21 +251,6 @@ object Logger {
      */
     private fun writeInternalMetricEvent(tag: String, message: String) {
         Reporting.report().event(name = tag, countInReport = false, internal = true).add(value = message)
-    }
-
-    /**
-     * Write an internal (only visible on timeline with debug mode enabled) structured log, using reflection
-     * (we don't expose the logInternal API publicly).
-     */
-    private fun writeInternalStructuredLog(tag: String, message: String) {
-        try {
-            val obtainLogger = CustomEvent::class.java.getDeclaredMethod("obtainRemoteLogger")
-            obtainLogger.isAccessible = true
-            val logger = obtainLogger.invoke(null) as ILogger?
-            logger?.logInternal(CustomEvent.timestamp(), tag, message)
-        } catch (ex: Exception) {
-            logcat(LogLevel.ERROR, "Failed to write structured log", ex)
-        }
     }
 
     @JvmStatic

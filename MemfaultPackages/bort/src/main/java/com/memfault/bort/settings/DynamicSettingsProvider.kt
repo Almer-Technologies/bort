@@ -1,11 +1,11 @@
 package com.memfault.bort.settings
 
+import androidx.work.NetworkType
 import com.memfault.bort.BuildConfig
 import com.memfault.bort.DataScrubbingRule
 import com.memfault.bort.DevMode
 import com.memfault.bort.DumpsterCapabilities
 import com.memfault.bort.clientserver.CachedClientServerMode
-import com.memfault.bort.clientserver.isEnabled
 import com.memfault.bort.settings.LogcatCollectionMode.PERIODIC
 import com.memfault.bort.settings.NetworkConstraint.CONNECTED
 import com.memfault.bort.settings.NetworkConstraint.UNMETERED
@@ -59,13 +59,13 @@ open class DynamicSettingsProvider @Inject constructor(
 
     override val isRuntimeEnableRequired: Boolean = BuildConfig.RUNTIME_ENABLE_REQUIRED
 
-    override val settingsUpdateInterval: Duration
-        get() = settings.bortSettingsUpdateInterval.duration
-
     override val httpApiSettings = object : HttpApiSettings {
         override val uploadNetworkConstraint: NetworkConstraint
-            get() = if (settings.httpApiUploadNetworkConstraintAllowMeteredConnection) CONNECTED
-            else UNMETERED
+            get() = if (settings.httpApiUploadNetworkConstraintAllowMeteredConnection) {
+                CONNECTED
+            } else {
+                UNMETERED
+            }
         override val uploadCompressionEnabled
             get() = settings.httpApiUploadCompressionEnabled
         override val projectKey get() = projectKeyProvider.projectKey
@@ -73,8 +73,6 @@ open class DynamicSettingsProvider @Inject constructor(
             get() = settings.httpApiFilesBaseUrl
         override val deviceBaseUrl
             get() = settings.httpApiDeviceBaseUrl
-        override val ingressBaseUrl
-            get() = settings.httpApiIngressBaseUrl
         override val connectTimeout
             get() = settings.httpApiConnectTimeout.duration
         override val writeTimeout
@@ -89,10 +87,6 @@ open class DynamicSettingsProvider @Inject constructor(
             get() = settings.httpApiBatchMarUploads && !devMode.isEnabled()
         override val batchedMarUploadPeriod: Duration
             get() = settings.httpApiBatchedMarUploadPeriod.duration
-        // TODO also true if fleet sampling enabled, but we don't know that
-        // Only device config is supported in client/server mode.
-        override suspend fun useDeviceConfig(): Boolean =
-            cachedClientServerMode.isEnabled() || settings.httpApiUseDeviceConfig
         override val deviceConfigInterval: Duration
             get() = settings.httpApiDeviceConfigInterval.duration
         override val maxMarFileSizeBytes: Int
@@ -105,7 +99,7 @@ open class DynamicSettingsProvider @Inject constructor(
             get() = settings.httpApiMaxMarUnsampledStorageBytes
     }
 
-    override val deviceInfoSettings = settings.deviceInfoSettings()
+    override val deviceInfoSettings get() = settings.deviceInfoSettings()
 
     override val sdkVersionInfo = BuildConfigSdkVersionInfo
 
@@ -155,13 +149,23 @@ open class DynamicSettingsProvider @Inject constructor(
             get() = settings.dropBoxContinuousLogFileLimitingSettings
         override val excludedTags: Set<String>
             get() = settings.dropBoxExcludedTags
+        override val forceEnableWtfTags: Boolean
+            get() = settings.dropBoxForceEnableWtfTags
         override val scrubTombstones: Boolean
             get() = settings.dropBoxScrubTombstones
+        override val processImmediately: Boolean
+            get() = settings.dropBoxProcessImmediately || devMode.isEnabled()
+        override val pollingInterval: Duration
+            get() = settings.dropBoxPollingInterval.duration
     }
 
     override val metricsSettings = object : MetricsSettings {
         override val dataSourceEnabled
             get() = settings.metricsDataSourceEnabled
+        override val dailyHeartbeatEnabled: Boolean
+            get() = settings.dailyHeartbeatEnabled
+        override val sessionsRateLimitingSettings: RateLimitingSettings
+            get() = settings.metricReportSessionsRateLimitingSettings
         override val collectionInterval
             get() = settings.metricsCollectionInterval.duration
         override val systemProperties: List<String>
@@ -172,6 +176,14 @@ open class DynamicSettingsProvider @Inject constructor(
             get() = settings.metricsMaxNumAppVersions
         override val reporterCollectionInterval: Duration
             get() = settings.metricsReporterCollectionInterval.duration
+        override val propertiesUseMetricService: Boolean
+            get() = settings.metricsPropertiesUseService
+        override val cachePackageManagerReport: Boolean
+            get() = settings.metricsCachePackages
+        override val recordImei: Boolean
+            get() = settings.metricsRecordImei
+        override val operationalCrashesExclusions: List<String>
+            get() = settings.metricsOperationalCrashesExclusions
     }
 
     override val batteryStatsSettings = object : BatteryStatsSettings {
@@ -181,6 +193,10 @@ open class DynamicSettingsProvider @Inject constructor(
             get() = settings.batteryStatsCommandTimeout.duration
         override val useHighResTelemetry: Boolean
             get() = settings.highResTelemetryEnabled && settings.batteryStatsUseHrt
+        override val collectSummary: Boolean
+            get() = settings.batteryStatsCollectSummary
+        override val componentMetrics: List<String>
+            get() = settings.batteryStatsComponentMetrics
     }
 
     override val logcatSettings = object : LogcatSettings {
@@ -217,11 +233,34 @@ open class DynamicSettingsProvider @Inject constructor(
             get() = settings.fileUploadHoldingAreaMaxStoredEventsOfInterest
     }
 
+    override val networkUsageSettings = object : NetworkUsageSettings {
+        override val dataSourceEnabled: Boolean
+            get() = settings.networkDataSourceEnabled
+        override val collectionReceiveThresholdKb: Long
+            get() = settings.networkCollectionReceiveThresholdKb
+        override val collectionTransmitThresholdKb: Long
+            get() = settings.networkCollectionTransmitThresholdKb
+    }
+
     override val rebootEventsSettings = object : RebootEventsSettings {
         override val dataSourceEnabled: Boolean
             get() = settings.rebootEventsDataSourceEnabled
         override val rateLimitingSettings: RateLimitingSettings
             get() = settings.rebootEventsRateLimitingSettings
+    }
+
+    override val significantAppsSettings = object : SignificantAppsSettings {
+        override val collectionEnabled: Boolean
+            get() = settings.significantAppsCollectionEnabled
+        override val packages: List<String>
+            get() = settings.significantAppsPackages
+    }
+
+    override val selinuxViolationSettings = object : SelinuxViolationSettings {
+        override val dataSourceEnabled: Boolean
+            get() = settings.selinuxViolationEventsDataSourceEnabled
+        override val rateLimitingSettings: RateLimitingSettings
+            get() = settings.selinuxViolationEventsRateLimitingSettings
     }
 
     override val dataScrubbingSettings = object : DataScrubbingSettings {
@@ -256,12 +295,19 @@ open class DynamicSettingsProvider @Inject constructor(
     override val otaSettings = object : OtaSettings {
         override val updateCheckInterval: Duration
             get() = settings.otaUpdateCheckInterval.duration
-        override val downloadNetworkConstraint: NetworkConstraint
-            get() = if (settings.otaDownloadNetworkConstraintAllowMeteredConnection) CONNECTED
-            else UNMETERED
+        override val downloadNetworkConstraint: NetworkType
+            get() = NetworkType.entries.firstOrNull {
+                it.name.equals(settings.otaDownloadNetworkConstraint, ignoreCase = true)
+            } ?: if (settings.otaDownloadNetworkConstraintAllowMeteredConnection) {
+                NetworkType.CONNECTED
+            } else {
+                NetworkType.UNMETERED
+            }
     }
 
     override val storageSettings = object : StorageSettings {
+        override val appsSizeDataSourceEnabled: Boolean
+            get() = settings.storageAppsSizeDataSourceEnabled
         override val maxClientServerFileTransferStorageBytes: Long
             get() = settings.storageMaxClientServerFileTransferStorageBytes
         override val maxClientServerFileTransferStorageAge: Duration
@@ -283,6 +329,11 @@ open class DynamicSettingsProvider @Inject constructor(
             get() = settings.fleetSamplingDebuggingActive
         override val monitoringActive: Boolean
             get() = settings.fleetSamplingMonitroringActive
+    }
+
+    override val chroniclerSettings: ChroniclerSettings = object : ChroniclerSettings {
+        override val marEnabled: Boolean
+            get() = settings.chroniclerMarEnabled
     }
 
     override fun invalidate() {

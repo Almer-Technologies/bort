@@ -18,12 +18,17 @@ import com.memfault.bort.Task
 import com.memfault.bort.TaskResult
 import com.memfault.bort.TaskRunnerWorker
 import com.memfault.bort.TemporaryFileFactory
+import com.memfault.bort.diagnostics.BortErrorType.FileCleanupError
+import com.memfault.bort.diagnostics.BortErrors
 import com.memfault.bort.fileExt.md5Hex
 import com.memfault.bort.metrics.BuiltinMetricsStore
 import com.memfault.bort.oneTimeWorkRequest
 import com.memfault.bort.periodicWorkRequest
+import com.memfault.bort.reporting.NumericAgg
 import com.memfault.bort.reporting.Reporting
+import com.memfault.bort.requester.BortWorkInfo
 import com.memfault.bort.requester.PeriodicWorkRequester
+import com.memfault.bort.requester.asBortWorkInfo
 import com.memfault.bort.requester.cleanupFiles
 import com.memfault.bort.requester.directorySize
 import com.memfault.bort.settings.HttpApiSettings
@@ -37,6 +42,8 @@ import com.memfault.bort.uploader.BACKOFF_DURATION
 import com.memfault.bort.uploader.EnqueuePreparedUploadTask
 import com.squareup.anvil.annotations.ContributesMultibinding
 import dagger.hilt.components.SingletonComponent
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.concurrent.TimeUnit
 import javax.inject.Inject
@@ -44,9 +51,6 @@ import kotlin.time.Duration
 import kotlin.time.Duration.Companion.ZERO
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.toJavaDuration
-import kotlin.time.toKotlinDuration
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 
 /**
  * Can be either periodic or one-time.
@@ -61,30 +65,46 @@ class MarBatchingTask @Inject constructor(
     private val enqueuePreparedUploadTask: EnqueuePreparedUploadTask,
     private val temporaryFileFactory: TemporaryFileFactory,
     private val storageSettings: StorageSettings,
+    private val bortErrors: BortErrors,
 ) : Task<Unit>() {
     private val bortTempDeletedMetric = Reporting.report().counter(
         name = "bort_temp_deleted",
         internal = true,
     )
-    private val bortTempStorageUsedMetric = Reporting.report().numberProperty(
+    private val bortTempStorageUsedMetric = Reporting.report().distribution(
         name = "bort_temp_storage_bytes",
+        aggregations = listOf(NumericAgg.LATEST_VALUE),
         internal = true,
     )
 
     override suspend fun doWork(worker: TaskRunnerWorker, input: Unit): TaskResult = withContext(Dispatchers.IO) {
-        temporaryFileFactory.temporaryFileDirectory?.let { tempDir ->
-            bortTempStorageUsedMetric.update(tempDir.directorySize())
-            val result = cleanupFiles(
-                dir = tempDir,
-                maxDirStorageBytes = storageSettings.bortTempMaxStorageBytes,
-                maxFileAge = storageSettings.bortTempMaxStorageAge
-            )
-            val deleted = result.deletedForStorageCount + result.deletedForAgeCount
-            if (deleted > 0) {
-                Logger.d("Deleted $deleted bort temp files to stay under storage limit")
-                bortTempDeletedMetric.incrementBy(deleted)
+        try {
+            temporaryFileFactory.temporaryFileDirectory?.let { tempDir ->
+                bortTempStorageUsedMetric.record(tempDir.directorySize())
+                val result = cleanupFiles(
+                    dir = tempDir,
+                    maxDirStorageBytes = storageSettings.bortTempMaxStorageBytes,
+                    maxFileAge = storageSettings.bortTempMaxStorageAge,
+                )
+                val deleted = result.deletedForStorageCount + result.deletedForAgeCount
+                if (deleted > 0) {
+                    Logger.d("Deleted $deleted bort temp files to stay under storage limit")
+                    bortTempDeletedMetric.incrementBy(deleted)
+                }
             }
+            // Don't allow any errors in cleanup to prevent us uploading files.
+        } catch (e: Exception) {
+            Logger.e("Error cleaning up files", e)
+            bortErrors.add(type = FileCleanupError, error = e)
         }
+
+        // Enqueue all Bort error Chronicler entries, right before upload.
+        try {
+            bortErrors.enqueueBortErrorsForUpload()
+        } catch (e: Exception) {
+            Logger.e("Error enqueuing Bort Chronicler entries", e)
+        }
+
         val deviceInfo = deviceInfoProvider.getDeviceInfo()
         marFileHoldingArea.bundleMarFilesForUpload().forEach { marFile ->
             enqueuePreparedUploadTask.upload(
@@ -102,7 +122,7 @@ class MarBatchingTask @Inject constructor(
     override fun convertAndValidateInputData(inputData: Data) = Unit
 
     companion object {
-        private const val WORK_UNIQUE_NAME_PERIODIC = "mar_upload_periodic"
+        const val WORK_UNIQUE_NAME_PERIODIC = "mar_upload_periodic"
         private const val WORK_UNIQUE_NAME_ONE_TIME = "mar_upload_onetime"
         const val UPLOAD_TAG_MAR = "mar"
 
@@ -120,7 +140,7 @@ class MarBatchingTask @Inject constructor(
                     .enqueueUniqueWork(
                         WORK_UNIQUE_NAME_ONE_TIME,
                         ExistingWorkPolicy.APPEND_OR_REPLACE,
-                        workRequest
+                        workRequest,
                     )
             }
         }
@@ -141,7 +161,7 @@ class MarBatchingTask @Inject constructor(
                     .enqueueUniquePeriodicWork(
                         WORK_UNIQUE_NAME_PERIODIC,
                         ExistingPeriodicWorkPolicy.UPDATE,
-                        workRequest
+                        workRequest,
                     )
             }
         }
@@ -172,10 +192,10 @@ class PeriodicMarUploadRequester @Inject constructor(
 ) : PeriodicWorkRequester() {
     override suspend fun startPeriodic(justBooted: Boolean, settingsChanged: Boolean) {
         // Jitter is based on the mar batching period.
-        val maxJitterDelay = httpApiSettings.batchedMarUploadPeriod.toJavaDuration()
+        val maxJitterDelay = httpApiSettings.batchedMarUploadPeriod
         val jitter: Duration
         val bootDelay = if (justBooted) 5.minutes else ZERO
-        jitter = bootDelay + jitterDelayProvider.randomJitterDelay(maxDelay = maxJitterDelay).toKotlinDuration()
+        jitter = bootDelay + jitterDelayProvider.randomJitterDelay(maxDelay = maxJitterDelay)
         MarBatchingTask.schedulePeriodicMarBatching(
             context = application,
             period = httpApiSettings.batchedMarUploadPeriod,
@@ -190,6 +210,12 @@ class PeriodicMarUploadRequester @Inject constructor(
 
     override suspend fun enabled(settings: SettingsProvider): Boolean {
         return settings.httpApiSettings.batchMarUploads
+    }
+
+    override suspend fun diagnostics(): BortWorkInfo {
+        return WorkManager.getInstance(application)
+            .getWorkInfosForUniqueWorkFlow(MarBatchingTask.WORK_UNIQUE_NAME_PERIODIC)
+            .asBortWorkInfo("marbatching")
     }
 
     override suspend fun parametersChanged(old: SettingsProvider, new: SettingsProvider): Boolean =

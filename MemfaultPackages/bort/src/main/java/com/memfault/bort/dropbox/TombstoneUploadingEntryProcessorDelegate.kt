@@ -7,19 +7,21 @@ import com.memfault.bort.TemporaryFileFactory
 import com.memfault.bort.parsers.NativeBacktraceParser
 import com.memfault.bort.parsers.TombstoneParser
 import com.memfault.bort.settings.DropboxScrubTombstones
+import com.memfault.bort.settings.OperationalCrashesExclusions
 import com.memfault.bort.shared.Logger
 import com.memfault.bort.tokenbucket.TokenBucketStore
 import com.memfault.bort.tokenbucket.Tombstone
+import okhttp3.internal.indexOfNonWhitespace
 import java.io.File
 import java.io.InputStream
 import javax.inject.Inject
-import okhttp3.internal.indexOfNonWhitespace
 
 class TombstoneUploadingEntryProcessorDelegate @Inject constructor(
     private val packageManagerClient: PackageManagerClient,
     @Tombstone private val tokenBucketStore: TokenBucketStore,
     private val tempFileFactory: TemporaryFileFactory,
     private val scrubTombstones: DropboxScrubTombstones,
+    private val operationalCrashesExclusions: OperationalCrashesExclusions,
 ) : UploadingEntryProcessorDelegate {
     override val tags = listOf("SYSTEM_TOMBSTONE")
 
@@ -57,10 +59,13 @@ class TombstoneUploadingEntryProcessorDelegate @Inject constructor(
         }
     }
 
+    override fun isCrash(entry: DropBoxManager.Entry, entryFile: File): Boolean =
+        entry.tag !in operationalCrashesExclusions()
+
     private fun findProcessName(tempFile: File) =
         listOf(
             { it: InputStream -> TombstoneParser(it).parse().processName },
-            { it: InputStream -> NativeBacktraceParser(it).parse().processes[0].cmdLine }
+            { it: InputStream -> NativeBacktraceParser(it).parse().processes[0].cmdLine },
         ).asSequence().map { parse ->
             try {
                 tempFile.inputStream().use {
@@ -76,7 +81,8 @@ class TombstoneUploadingEntryProcessorDelegate @Inject constructor(
             Logger.e("Tombstone failed to parse")
         }
 
-        val packageInfo = packageManagerClient.findPackagesByProcessName(processName)
+        val packages = packageManagerClient.getPackageManagerReport()
+        val packageInfo = packages.findPackagesByProcessName(processName)
         val uploaderPackage =
             packageInfo?.toUploaderPackage() ?: return emptyList<AndroidPackage>().also {
                 Logger.e("Failed to resolve package: processName=$processName packageInfo=$packageInfo")

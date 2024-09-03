@@ -7,6 +7,7 @@ import com.memfault.bort.PackageNameAllowList
 import com.memfault.bort.TemporaryFileFactory
 import com.memfault.bort.logcat.LogcatLineProcessor
 import com.memfault.bort.logcat.NextLogcatCidProvider
+import com.memfault.bort.logcat.SelinuxViolationLogcatDetector
 import com.memfault.bort.logcat.scrub
 import com.memfault.bort.logcat.toAllowedUids
 import com.memfault.bort.logcat.update
@@ -27,6 +28,11 @@ import com.memfault.bort.uploader.LogcatFileUploadPayload
 import com.memfault.bort.uploader.PendingFileUploadEntry
 import com.squareup.anvil.annotations.ContributesMultibinding
 import dagger.hilt.components.SingletonComponent
+import kotlinx.coroutines.flow.asFlow
+import kotlinx.coroutines.flow.fold
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.onEach
+import okio.ByteString.Companion.toByteString
 import java.io.File
 import java.security.MessageDigest
 import java.time.Duration
@@ -34,7 +40,6 @@ import java.time.Instant
 import javax.inject.Inject
 import javax.inject.Provider
 import kotlin.time.toKotlinDuration
-import okio.ByteString.Companion.toByteString
 
 private const val DROPBOX_ENTRY_TAG = "memfault_clog"
 
@@ -49,6 +54,7 @@ class ContinuousLogcatEntryProcessor @Inject constructor(
     private val combinedTimeProvider: CombinedTimeProvider,
     private val fileUploadingArea: FileUploadHoldingArea,
     private val kernelOopsDetector: Provider<LogcatLineProcessor>,
+    private val selinuxViolationLogcatDetector: SelinuxViolationLogcatDetector,
     @ContinuousLogFile private val tokenBucketStore: TokenBucketStore,
 ) : EntryProcessor() {
     override val tags: List<String> = listOf(DROPBOX_ENTRY_TAG)
@@ -61,13 +67,13 @@ class ContinuousLogcatEntryProcessor @Inject constructor(
             LogcatFormatModifier.UTC,
             LogcatFormatModifier.YEAR,
             LogcatFormatModifier.UID,
-        )
+        ),
     )
 
     private fun allowedByRateLimit(): Boolean =
         tokenBucketStore.takeSimple(key = DROPBOX_ENTRY_TAG, tag = "continuous_log")
 
-    override suspend fun process(entry: DropBoxManager.Entry, fileTime: AbsoluteTime?) {
+    override suspend fun process(entry: DropBoxManager.Entry) {
         val stream = entry.inputStream ?: return
 
         if (!logcatSettings.dataSourceEnabled) {
@@ -78,20 +84,22 @@ class ContinuousLogcatEntryProcessor @Inject constructor(
             return
         }
 
-        val allowedUids = packageManagerClient.getPackageManagerReport()
-            .toAllowedUids(packageNameAllowList)
+        val packageManagerReport = packageManagerClient.getPackageManagerReport()
+        val allowedUids = packageManagerReport.toAllowedUids(packageNameAllowList)
 
         val kernelOopsDetector = kernelOopsDetector.get()
 
         val metadata = stream.bufferedReader().useLines { lines ->
             temporaryFileFactory.createTemporaryFile(
-                prefix = "logcat", suffix = ".txt"
+                prefix = "logcat",
+                suffix = ".txt",
             ).useFile { file, preventDeletion ->
                 file.outputStream().bufferedWriter().use { outputWriter ->
                     val md5 = MessageDigest.getInstance("MD5")
-                    val (timeStart, timeEnd) = lines.toLogcatLines(continuousLogcatCommand)
+                    val (timeStart, timeEnd) = lines.toLogcatLines(continuousLogcatCommand).asFlow()
                         .map { it.scrub(dataScrubber, allowedUids) }
                         .onEach {
+                            selinuxViolationLogcatDetector.process(it, packageManagerReport)
                             kernelOopsDetector.process(it)
                             it.writeTo(outputWriter)
                             it.update(md5)

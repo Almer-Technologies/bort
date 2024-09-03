@@ -11,10 +11,10 @@ import com.memfault.bort.shared.SdkVersionInfo
 import kotlin.time.Duration
 
 enum class NetworkConstraint(
-    val networkType: NetworkType
+    val networkType: NetworkType,
 ) {
     CONNECTED(NetworkType.CONNECTED),
-    UNMETERED(NetworkType.UNMETERED)
+    UNMETERED(NetworkType.UNMETERED),
 }
 
 interface BugReportSettings {
@@ -42,22 +42,33 @@ interface DropBoxSettings {
     val marFileRateLimitingSettings: RateLimitingSettings
     val continuousLogFileRateLimitingSettings: RateLimitingSettings
     val excludedTags: Set<String>
+    val forceEnableWtfTags: Boolean
     val scrubTombstones: Boolean
+    val processImmediately: Boolean
+    val pollingInterval: Duration
 }
 
 interface BatteryStatsSettings {
     val dataSourceEnabled: Boolean
     val commandTimeout: Duration
     val useHighResTelemetry: Boolean
+    val collectSummary: Boolean
+    val componentMetrics: List<String>
 }
 
 interface MetricsSettings {
     val dataSourceEnabled: Boolean
+    val dailyHeartbeatEnabled: Boolean
+    val sessionsRateLimitingSettings: RateLimitingSettings
     val collectionInterval: Duration
     val systemProperties: List<String>
     val appVersions: List<String>
     val maxNumAppVersions: Int
     val reporterCollectionInterval: Duration
+    val propertiesUseMetricService: Boolean
+    val cachePackageManagerReport: Boolean
+    val recordImei: Boolean
+    val operationalCrashesExclusions: List<String>
 }
 
 interface LogcatSettings {
@@ -83,7 +94,6 @@ interface HttpApiSettings {
     val projectKey: String
     val filesBaseUrl: String
     val deviceBaseUrl: String
-    val ingressBaseUrl: String
     val uploadNetworkConstraint: NetworkConstraint
     val uploadCompressionEnabled: Boolean
 
@@ -99,7 +109,6 @@ interface HttpApiSettings {
     val zipCompressionLevel: Int
     val batchMarUploads: Boolean
     val batchedMarUploadPeriod: Duration
-    suspend fun useDeviceConfig(): Boolean
     val deviceConfigInterval: Duration
     val maxMarFileSizeBytes: Int
     val maxMarStorageBytes: Long
@@ -107,7 +116,23 @@ interface HttpApiSettings {
     val maxMarUnsampledStoredBytes: Long
 }
 
+interface NetworkUsageSettings {
+    val dataSourceEnabled: Boolean
+    val collectionReceiveThresholdKb: Long
+    val collectionTransmitThresholdKb: Long
+}
+
 interface RebootEventsSettings {
+    val dataSourceEnabled: Boolean
+    val rateLimitingSettings: RateLimitingSettings
+}
+
+interface SignificantAppsSettings {
+    val collectionEnabled: Boolean
+    val packages: List<String>
+}
+
+interface SelinuxViolationSettings {
     val dataSourceEnabled: Boolean
     val rateLimitingSettings: RateLimitingSettings
 }
@@ -133,10 +158,11 @@ interface StructuredLogSettings {
 
 interface OtaSettings {
     val updateCheckInterval: Duration
-    val downloadNetworkConstraint: NetworkConstraint
+    val downloadNetworkConstraint: NetworkType
 }
 
 interface StorageSettings {
+    val appsSizeDataSourceEnabled: Boolean
     val maxClientServerFileTransferStorageBytes: Long
     val maxClientServerFileTransferStorageAge: Duration
     val usageReporterTempMaxStorageBytes: Long
@@ -148,10 +174,16 @@ interface StorageSettings {
 interface FleetSamplingSettings {
     /** Is this aspect enabled for the project? (does not determine what the resolution should be) */
     val loggingActive: Boolean
+
     /** Is this aspect enabled for the project? (does not determine what the resolution should be) */
     val debuggingActive: Boolean
+
     /** Is this aspect enabled for the project? (does not determine what the resolution should be) */
     val monitoringActive: Boolean
+}
+
+interface ChroniclerSettings {
+    val marEnabled: Boolean
 }
 
 interface SettingsProvider {
@@ -160,7 +192,6 @@ interface SettingsProvider {
     val eventLogEnabled: Boolean
     val internalLogToDiskEnabled: Boolean
     val isRuntimeEnableRequired: Boolean
-    val settingsUpdateInterval: Duration
 
     val httpApiSettings: HttpApiSettings
     val sdkVersionInfo: SdkVersionInfo
@@ -171,13 +202,17 @@ interface SettingsProvider {
     val batteryStatsSettings: BatteryStatsSettings
     val logcatSettings: LogcatSettings
     val fileUploadHoldingAreaSettings: FileUploadHoldingAreaSettings
+    val networkUsageSettings: NetworkUsageSettings
     val rebootEventsSettings: RebootEventsSettings
+    val significantAppsSettings: SignificantAppsSettings
+    val selinuxViolationSettings: SelinuxViolationSettings
     val dataScrubbingSettings: DataScrubbingSettings
     val packageManagerSettings: PackageManagerSettings
     val structuredLogSettings: StructuredLogSettings
     val otaSettings: OtaSettings
     val storageSettings: StorageSettings
     val fleetSamplingSettings: FleetSamplingSettings
+    val chroniclerSettings: ChroniclerSettings
 
     fun invalidate()
 }
@@ -192,7 +227,6 @@ fun SettingsProvider.selectSettingsToMap(): Map<String, Any> = mapOf(
     "Http Api Settings" to mapOf(
         "deviceBaseUrl" to httpApiSettings.deviceBaseUrl,
         "filesBaseUrl" to httpApiSettings.filesBaseUrl,
-        "ingressBaseUrl" to httpApiSettings.ingressBaseUrl,
         "uploadNetworkConstraint" to httpApiSettings.uploadNetworkConstraint,
         "connectTimeout" to httpApiSettings.connectTimeout,
         "writeTimeout" to httpApiSettings.writeTimeout,
@@ -223,6 +257,12 @@ fun SettingsProvider.selectSettingsToMap(): Map<String, Any> = mapOf(
     "BatteryStats Settings" to mapOf(
         "dataSourceEnabled" to batteryStatsSettings.dataSourceEnabled,
     ),
+    "Selinux Violation Settings" to mapOf(
+        "dataSourceEnabled" to selinuxViolationSettings.dataSourceEnabled,
+    ),
+    "Chronicler Settings" to mapOf(
+        "marEnabled" to chroniclerSettings.marEnabled,
+    ),
 )
 
 fun SettingsProvider.asLoggerSettings(): LoggerSettings = LoggerSettings(
@@ -232,11 +272,5 @@ fun SettingsProvider.asLoggerSettings(): LoggerSettings = LoggerSettings(
     minStructuredLevel = minStructuredLogLevel,
     hrtEnabled = structuredLogSettings.highResMetricsEnabled,
 )
-
-interface BortEnabledProvider {
-    fun setEnabled(isOptedIn: Boolean)
-    fun isEnabled(): Boolean
-    fun requiresRuntimeEnable(): Boolean
-}
 
 typealias ConfigValue<T> = () -> T

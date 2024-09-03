@@ -1,5 +1,9 @@
 package com.memfault.bort.metrics
 
+import com.memfault.bort.metrics.CrashFreeHoursMetricLogger.Companion.CRASH_FREE_HOURS_METRIC_KEY
+import com.memfault.bort.metrics.CrashFreeHoursMetricLogger.Companion.OPERATIONAL_CRASHES_METRIC_KEY
+import com.memfault.bort.metrics.CrashFreeHoursMetricLogger.Companion.OPERATIONAL_HOURS_METRIC_KEY
+import com.memfault.bort.metrics.SystemPropertiesCollector.Companion.IMEI_METRIC
 import kotlinx.serialization.json.JsonPrimitive
 
 /**
@@ -22,7 +26,7 @@ object AggregateMetricFilter {
     private fun handleMetric(
         metric: Map.Entry<String, JsonPrimitive>,
         internal: Boolean,
-    ): Pair<String, JsonPrimitive>? {
+    ): Pair<String, JsonPrimitive> {
         if (!internal) {
             // Special case: app versions. Drop .latest.
             if (metric.key.startsWith("version.")) {
@@ -35,10 +39,47 @@ object AggregateMetricFilter {
             return metric.key.removeSuffix(".latest") to metric.value
         }
 
+        // Special case: sync_.*success.sum and sync_.*failure.sum. Drop .sum.
+        if (metric.key.endsWith("_successful.sum")) {
+            return metric.key.removeSuffix(".sum") to metric.value
+        }
+        if (metric.key.endsWith("_failure.sum")) {
+            return metric.key.removeSuffix(".sum") to metric.value
+        }
+
+        // Special case: crash-free hours. Drop .sum
+        if (setOf(
+                "$OPERATIONAL_CRASHES_METRIC_KEY.sum",
+                "$OPERATIONAL_HOURS_METRIC_KEY.sum",
+                "$CRASH_FREE_HOURS_METRIC_KEY.sum",
+            ).contains(metric.key)
+        ) {
+            return metric.key.removeSuffix(".sum") to metric.value
+        }
+
+        // Special case: bort_lite
+        if (metric.key == "$BORT_LITE_METRIC_KEY.latest") {
+            return BORT_LITE_METRIC_KEY to metric.value
+        }
+
+        // Special case: imei
+        if (metric.key == "$IMEI_METRIC.latest") {
+            return IMEI_METRIC to metric.value
+        }
+
         // Internal metrics: drop the sum/latest suffixes.
         if (internal) {
             if (metric.key.endsWith(".sum")) return metric.key.removeSuffix(".sum") to metric.value
             if (metric.key.endsWith(".latest")) return metric.key.removeSuffix(".latest") to metric.value
+        }
+
+        // Network metrics: converts .sum to .latest. We converted network stats to a single value on a Distribution
+        // with a SUM aggregation so that it would add the total network usage over the 24 hour period, but it was
+        // previously calculated as an in-memory metric ending in .latest, so we want to keep that original name.
+        if ((metric.key.startsWith("network.app.") || metric.key.startsWith("network.total.")) &&
+            metric.key.endsWith(".sum")
+        ) {
+            return (metric.key.removeSuffix(".sum") + ".latest") to metric.value
         }
 
         // Untouched

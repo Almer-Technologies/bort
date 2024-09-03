@@ -15,6 +15,9 @@ const val INTENT_EXTRA_DEV_MODE_ENABLED = "com.memfault.intent.extra.DEV_MODE_EN
 const val INTENT_ACTION_UPDATE_PROJECT_KEY = "com.memfault.intent.action.UPDATE_PROJECT_KEY"
 const val INTENT_EXTRA_PROJECT_KEY = "com.memfault.intent.extra.PROJECT_KEY"
 
+const val INTENT_ACTION_OVERRIDE_SERIAL = "com.memfault.intent.action.OVERRIDE_SERIAL"
+const val INTENT_EXTRA_SERIAL = "com.memfault.intent.extra.SERIAL"
+
 const val PREFERENCE_BORT_ENABLED = "com.memfault.preference.BORT_ENABLED"
 const val PREFERENCE_DEVICE_ID = "com.memfault.preference.DEVICE_ID"
 const val PREFERENCE_LAST_TRACKED_BOOT_COUNT = "com.memfault.preference.LAST_TRACKED_BOOT_COUNT"
@@ -27,6 +30,8 @@ const val PREFERENCE_LAST_HEARTBEAT_END_TIME_JSON =
     "com.memfault.preference.PREFERENCE_LAST_HEARTBEAT_END_TIME_JSON"
 const val PREFERENCE_NEXT_BATTERYSTATS_HISTORY_START_TIME =
     "com.memfault.preference.PREFERENCE_NEXT_BATTERYSTATS_HISTORY_START_TIME"
+const val PREFERENCE_BATTERYSTATS_SUMMARY_DATA =
+    "com.memfault.preference.PREFERENCE_BATTERYSTATS_SUMMARY_DATA"
 const val PREFERENCE_NEXT_LOGCAT_START_TIME_JSON =
     "com.memfault.preference.PREFERENCE_NEXT_LOGCAT_START_TIME_JSON"
 const val PREFERENCE_NEXT_LOGCAT_ID =

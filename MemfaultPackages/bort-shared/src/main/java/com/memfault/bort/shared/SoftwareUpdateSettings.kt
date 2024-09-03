@@ -30,7 +30,7 @@ data class SoftwareUpdateSettings(
         fun deserialize(string: String): SoftwareUpdateSettings? = try {
             BortSharedJson.decodeFromString(serializer(), string)
         } catch (ex: SerializationException) {
-            ex.printStackTrace()
+            Logger.i("SoftwareUpdateSettings deserialize", ex)
             null
         }
 
@@ -41,7 +41,7 @@ data class SoftwareUpdateSettings(
                     // settings format. See LegacyOtaSettings.
                     config.asLegacyOtaSettings().serialize(),
                     config.serialize(),
-                )
+                ),
             )
         }
     }

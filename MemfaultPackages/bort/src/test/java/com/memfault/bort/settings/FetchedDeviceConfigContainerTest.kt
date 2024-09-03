@@ -75,7 +75,6 @@ class FetchedDeviceConfigContainerTest {
                             "http_api.connect_timeout_ms": 30000,
                             "http_api.device_base_url": "http://localhost:8000",
                             "http_api.files_base_url": "http://localhost:8000",
-                            "http_api.ingress_base_url": "http://localhost:8000",
                             "http_api.read_timeout_ms": 0,
                             "http_api.upload_compression_enabled": True,
                             "http_api.upload_network_constraint_allow_metered_connection": True,
@@ -111,6 +110,12 @@ class FetchedDeviceConfigContainerTest {
                                 "default_capacity": 5,
                                 "default_period_ms": 900000,
                                 "max_buckets": 1
+                            },
+                            "selinux_violation_events.data_source_enabled": false,
+                            "selinux_violation_events.rate_limiting_settings": {
+                                "default_capacity": 2,
+                                "default_period_ms": 86400000,
+                                "max_buckets": 15
                             },
                             "storage.max_client_server_file_transfer_storage_bytes": 50000000,
                             "structured_log.data_source_enabled": True,
@@ -204,7 +209,6 @@ class FetchedDeviceConfigContainerTest {
                             "http_api.connect_timeout_ms": 30000,
                             "http_api.device_base_url": "http://localhost:8000",
                             "http_api.files_base_url": "http://localhost:8000",
-                            "http_api.ingress_base_url": "http://localhost:8000",
                             "http_api.read_timeout_ms": 0,
                             "http_api.upload_compression_enabled": True,
                             "http_api.upload_network_constraint_allow_metered_connection": True,
@@ -240,6 +244,12 @@ class FetchedDeviceConfigContainerTest {
                                 "default_capacity": 5,
                                 "default_period_ms": 900000,
                                 "max_buckets": 1
+                            },
+                            "selinux_violation_events.data_source_enabled": false,
+                            "selinux_violation_events.rate_limiting_settings": {
+                                "default_capacity": 2,
+                                "default_period_ms": 86400000,
+                                "max_buckets": 15
                             },
                             "storage.max_client_server_file_transfer_storage_bytes": 50000000,
                             "structured_log.data_source_enabled": True,
@@ -289,10 +299,10 @@ class FetchedDeviceConfigContainerTest {
         assertEquals("normal", result.memfault!!.sampling.debuggingResolution)
         assertEquals(1, result.others.size)
         val square = JsonObject(
-            mapOf("prop1" to JsonPrimitive("val1"))
+            mapOf("prop1" to JsonPrimitive("val1")),
         )
         val others = JsonObject(
-            mapOf("square" to square)
+            mapOf("square" to square),
         )
         assertEquals(others, result.others)
 

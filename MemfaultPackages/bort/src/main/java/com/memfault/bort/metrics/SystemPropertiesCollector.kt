@@ -1,6 +1,7 @@
 package com.memfault.bort.metrics
 
-import androidx.annotation.VisibleForTesting
+import android.app.Application
+import android.telephony.TelephonyManager
 import com.memfault.bort.DumpsterClient
 import com.memfault.bort.metrics.SystemPropertiesCollector.TypedSyspropVal.BoolVal
 import com.memfault.bort.metrics.SystemPropertiesCollector.TypedSyspropVal.DoubleVal
@@ -8,32 +9,49 @@ import com.memfault.bort.metrics.SystemPropertiesCollector.TypedSyspropVal.LongV
 import com.memfault.bort.metrics.SystemPropertiesCollector.TypedSyspropVal.StringVal
 import com.memfault.bort.settings.MetricsSettings
 import com.memfault.bort.shared.ClientServerMode
+import com.memfault.bort.shared.Logger
 import javax.inject.Inject
 
 /**
  * Collects system properties of interest, and passes them on to the device properties database.
  */
 class SystemPropertiesCollector @Inject constructor(
-    private val devicePropertiesStore: DevicePropertiesStore,
     private val settings: MetricsSettings,
     private val dumpsterClient: DumpsterClient,
+    private val application: Application,
 ) {
-    suspend fun updateSystemProperties() {
+    suspend fun updateSystemProperties(devicePropertiesStore: DevicePropertiesStore) {
         val systemProperties = dumpsterClient.getprop() ?: return
         val systemPropertyTypes = dumpsterClient.getpropTypes() ?: return
-        updateSystemPropertiesWith(systemProperties = systemProperties, systemPropertyTypes = systemPropertyTypes)
+        updateSystemPropertiesWith(
+            systemProperties = systemProperties,
+            systemPropertyTypes = systemPropertyTypes,
+            devicePropertiesStore = devicePropertiesStore,
+        )
+        if (settings.recordImei) {
+            try {
+                application.getSystemService(TelephonyManager::class.java)?.let { telephony ->
+                    telephony.imei?.let { imei ->
+                        devicePropertiesStore.upsert(IMEI_METRIC, imei)
+                    }
+                }
+            } catch (e: SecurityException) {
+                Logger.d("Error fetching imei")
+            }
+        }
     }
 
-    @VisibleForTesting
-    internal fun updateSystemPropertiesWith(
+    private fun updateSystemPropertiesWith(
         systemProperties: Map<String, String>,
         systemPropertyTypes: Map<String, String>,
+        devicePropertiesStore: DevicePropertiesStore,
     ) {
         val properties = settings.systemProperties.toSet()
         systemProperties.forEach { (key, value) ->
             val internal = key in INTERNAL_PROPERTIES
             if (key in properties || internal) {
                 val type = systemPropertyTypes[key]
+
                 /**
                  * Android system properties all have a string key and string value. But there is metadata (which we get using
                  * getpropTypes()) to define typing for each property. We map those to internal types.
@@ -91,5 +109,6 @@ class SystemPropertiesCollector @Inject constructor(
             ClientServerMode.SYSTEM_PROP,
         )
         private const val SYSTEM_PROPERTY_PREFIX = "sysprop."
+        const val IMEI_METRIC = "phone.imei"
     }
 }

@@ -1,3 +1,5 @@
+@file:Suppress("DEPRECATION")
+
 package com.memfault.bort.settings
 
 import android.app.Application
@@ -8,7 +10,8 @@ import com.github.michaelbull.result.onFailure
 import com.memfault.bort.BortJson
 import com.memfault.bort.DumpsterClient
 import com.memfault.bort.ReporterServiceConnector
-import com.memfault.bort.dropbox.DropBoxFilterSettings
+import com.memfault.bort.dropbox.DropBoxTagEnabler
+import com.memfault.bort.receivers.DropBoxEntryAddedReceiver
 import com.memfault.bort.reporting.CustomEvent
 import com.memfault.bort.requester.PeriodicWorkRequester.PeriodicWorkManager
 import com.memfault.bort.shared.BuildConfig
@@ -26,18 +29,18 @@ class SettingsUpdateCallback @Inject constructor(
     private val dumpsterClient: DumpsterClient,
     private val bortEnabledProvider: BortEnabledProvider,
     private val continuousLoggingController: ContinuousLoggingController,
-    private val dropBoxFilterSettings: DropBoxFilterSettings,
     private val periodicWorkManager: PeriodicWorkManager,
+    private val dropBoxEntryAddedReceiver: DropBoxEntryAddedReceiver,
+    private val dropBoxTagEnabler: DropBoxTagEnabler,
 ) {
     suspend fun onSettingsUpdated(
         settingsProvider: SettingsProvider,
-        fetchedSettingsUpdate: FetchedSettingsUpdate
+        fetchedSettingsUpdate: FetchedSettingsUpdate,
     ) {
         applyReporterServiceSettings(
             reporterServiceConnector = reporterServiceConnector,
             settingsProvider = settingsProvider,
             bortEnabledProvider = bortEnabledProvider,
-            dropBoxFilterSettings = dropBoxFilterSettings
         )
 
         dumpsterClient.setStructuredLogEnabled(settingsProvider.structuredLogSettings.dataSourceEnabled)
@@ -45,11 +48,10 @@ class SettingsUpdateCallback @Inject constructor(
         Logger.test("logcat.collection_mode=${settingsProvider.logcatSettings.collectionMode}")
         continuousLoggingController.configureContinuousLogging()
 
-        // Pass the new settings to structured logging (after we enable/disable it)
-        reloadCustomEventConfigFrom(settingsProvider.structuredLogSettings)
-
         // Update periodic tasks that might have changed after a settings update
         periodicWorkManager.maybeRestartTasksAfterSettingsChange(fetchedSettingsUpdate)
+        dropBoxTagEnabler.enableTagsIfRequired()
+        dropBoxEntryAddedReceiver.initialize()
 
         with(settingsProvider) {
             Logger.initSettings(asLoggerSettings())
@@ -60,7 +62,7 @@ class SettingsUpdateCallback @Inject constructor(
         application.sendBroadcast(
             Intent(INTENT_ACTION_OTA_SETTINGS_CHANGED).apply {
                 component = ComponentName.createRelative(BuildConfig.BORT_OTA_APPLICATION_ID, OTA_RECEIVER_CLASS)
-            }
+            },
         )
     }
 }
@@ -68,8 +70,9 @@ class SettingsUpdateCallback @Inject constructor(
 fun reloadCustomEventConfigFrom(settings: StructuredLogSettings) {
     CustomEvent.reloadConfig(
         BortJson.encodeToString(
-            StructuredLogDaemonSettings.serializer(), settings.toStructuredLogDaemonSettings()
-        )
+            StructuredLogDaemonSettings.serializer(),
+            settings.toStructuredLogDaemonSettings(),
+        ),
     )
 }
 
@@ -77,7 +80,6 @@ suspend fun applyReporterServiceSettings(
     reporterServiceConnector: ReporterServiceConnector,
     settingsProvider: SettingsProvider,
     bortEnabledProvider: BortEnabledProvider,
-    dropBoxFilterSettings: DropBoxFilterSettings,
 ) {
     try {
         reporterServiceConnector.connect { getConnection ->
@@ -98,21 +100,16 @@ suspend fun applyReporterServiceSettings(
             connection.setReporterSettings(
                 SetReporterSettingsRequest(
                     maxFileTransferStorageBytes =
-                        settingsProvider.storageSettings.maxClientServerFileTransferStorageBytes,
+                    settingsProvider.storageSettings.maxClientServerFileTransferStorageBytes,
                     maxFileTransferStorageAge =
-                        settingsProvider.storageSettings.maxClientServerFileTransferStorageAge.boxed(),
+                    settingsProvider.storageSettings.maxClientServerFileTransferStorageAge.boxed(),
                     maxReporterTempStorageBytes = settingsProvider.storageSettings.usageReporterTempMaxStorageBytes,
                     maxReporterTempStorageAge = settingsProvider.storageSettings.usageReporterTempMaxStorageAge.boxed(),
                     bortEnabled = isBortEnabled,
-                )
+                ),
             ).onFailure {
                 Logger.w("could not send settings to reporter service", it)
             }
-
-            connection.dropBoxSetTagFilter(dropBoxFilterSettings.tagFilter())
-                .onFailure {
-                    Logger.w("Failed to configure dropbox tags", it)
-                }
         }
     } catch (e: RemoteException) {
         // This happens if UsageReporter is so old that it does not contain the ReporterService at all:

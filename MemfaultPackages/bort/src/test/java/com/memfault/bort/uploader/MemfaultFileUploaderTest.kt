@@ -4,16 +4,16 @@ import com.memfault.bort.FileUploadToken
 import com.memfault.bort.MarFileUploadPayload
 import com.memfault.bort.Payload
 import com.memfault.bort.TaskResult
-import java.io.File
-import java.nio.file.Files
-import java.nio.file.StandardCopyOption
-import java.util.UUID
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.runTest
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import org.junit.Rule
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
+import java.io.File
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
+import java.util.UUID
 
 class MemfaultFileUploaderTest {
     @get:Rule
@@ -29,7 +29,7 @@ class MemfaultFileUploaderTest {
             Files.copy(
                 loadTestFileFromResources().toPath(),
                 it.toPath(),
-                StandardCopyOption.REPLACE_EXISTING
+                StandardCopyOption.REPLACE_EXISTING,
             )
         }
     }
@@ -41,39 +41,35 @@ class MemfaultFileUploaderTest {
             deviceSerial = "",
             softwareVersion = "",
             softwareType = "",
-        )
+        ),
     )
 
     @Test
-    fun prepareFailsOnBadCode() {
+    fun prepareFailsOnBadCode() = runTest {
         server.enqueue(MockResponse().setResponseCode(400))
-        val result = runBlocking {
-            MemfaultFileUploader(
-                preparedUploader = createUploader(server)
-            ).upload(file, fileUploadPayload(), shouldCompress = true)
-        }
+        val result = MemfaultFileUploader(
+            preparedUploader = createUploader(server),
+        ).upload(file, fileUploadPayload(), shouldCompress = true)
         assert(result == TaskResult.FAILURE)
     }
 
     @Test
-    fun prepareRetriesOn500() {
+    fun prepareRetriesOn500() = runTest {
         server.enqueue(MockResponse().setResponseCode(500))
-        val result = runBlocking {
-            MemfaultFileUploader(
-                preparedUploader = createUploader(server)
-            ).upload(file, fileUploadPayload(), shouldCompress = true)
-        }
+        val result = MemfaultFileUploader(
+            preparedUploader = createUploader(server),
+        ).upload(file, fileUploadPayload(), shouldCompress = true)
+
         assert(result == TaskResult.RETRY)
     }
 
     @Test
-    fun prepareWithNoResponseBodyRetries() {
+    fun prepareWithNoResponseBodyRetries() = runTest {
         server.enqueue(MockResponse())
-        val result = runBlocking {
-            MemfaultFileUploader(
-                preparedUploader = createUploader(server)
-            ).upload(file, fileUploadPayload(), shouldCompress = true)
-        }
+        val result = MemfaultFileUploader(
+            preparedUploader = createUploader(server),
+        ).upload(file, fileUploadPayload(), shouldCompress = true)
+
         assert(result == TaskResult.RETRY)
     }
 }
