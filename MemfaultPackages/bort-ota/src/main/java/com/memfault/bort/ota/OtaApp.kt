@@ -2,9 +2,11 @@ package com.memfault.bort.ota
 
 import android.app.Application
 import android.content.Intent
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
+import android.util.Log
 import androidx.hilt.work.HiltWorkerFactory
 import androidx.work.Configuration
 import com.memfault.bort.ota.lib.OtaLoggerSettings
@@ -113,6 +115,12 @@ class OtaApp : Application(), Configuration.Provider, Runnable {
         get() = Settings.Secure.getInt(contentResolver, "user_setup_complete", 0) != 0
 
     private fun launchForceUpdateUI() {
+        //As per Confluence document: For Android 9 we remove the forced update altogether since it will soon be obsolete.
+        //https://almer-ar.atlassian.net/wiki/spaces/Software/pages/155549754/OS+Update+behaviour
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            Log.i("AlmerOTA", "No Force OTA screen for Android 9")
+            return
+        }
         if (updater.forceUpdate) {
             val intent = Intent(this, UpdateActivity::class.java)
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
