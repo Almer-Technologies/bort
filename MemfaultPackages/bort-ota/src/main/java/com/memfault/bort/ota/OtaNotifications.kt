@@ -5,6 +5,7 @@ import android.app.Application
 import android.app.PendingIntent
 import android.content.Intent
 import android.os.Build
+import android.util.Log
 import androidx.core.app.NotificationChannelCompat
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
@@ -39,9 +40,11 @@ class OtaNotifications
             .launch {
                 updater.updateState
                     .collect { state ->
+                        if (state is State.UpdateDownloading) {
+                            almerCheckForceOTAUI(state.ota)
+                        }
                         if (state is State.UpdateAvailable && state.showNotification.ifNull(true)) {
                             sendUpdateAvailableNotification(state.ota)
-                            almerCheckForceOTAUI(state.ota)
                         } else {
                             cancelUpdateAvailableNotification()
                         }
@@ -65,6 +68,7 @@ class OtaNotifications
 
     private fun almerCheckForceOTAUI(ota: Ota) {
         if (!ota.releaseMetadata.containsKey("minBuildUtc")) {
+            Log.i("AlmerOTA", "No Build Utc field. No force ota")
             return
         }
         val minVer: String = ota.releaseMetadata.getOrElse("minBuildUtc") { "0" }

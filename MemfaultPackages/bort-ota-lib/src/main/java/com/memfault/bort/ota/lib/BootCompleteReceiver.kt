@@ -3,7 +3,8 @@ package com.memfault.bort.ota.lib
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.provider.Settings
+import android.os.UserManager
+import android.util.Log
 import com.memfault.bort.shared.BuildConfig
 import com.memfault.bort.shared.INTENT_ACTION_OTA_SETTINGS_CHANGED
 import com.memfault.bort.shared.InternalMetric
@@ -76,15 +77,13 @@ class BootCompleteReceiver : BroadcastReceiver() {
             }
             updater.setState(State.Idle)
 
+
             //Check only if user setup is completed.
-            if (Settings.Secure.getInt(context.contentResolver, "user_setup_complete", 0) != 0) {
+            if ((context.getSystemService(Context.USER_SERVICE) as UserManager).isUserUnlocked) {
+                Log.i("AlmerOTA", "Triggering check for update on Boot")
                 val updater = updater
-                if (updater.updateState.first().allowsUpdateCheck()) {
-                    updater.perform(Action.CheckForUpdate(background = true))
-                    // suspend until the check is complete, perform above does not necessarily block depending on
-                    // the action handler implementation
-                    updater.updateState.first { it != State.CheckingForUpdates }
-                }
+                updater.perform(Action.CheckForUpdate(background = true))
+                updater.updateState.first { it != State.CheckingForUpdates }
             }
         }
     }

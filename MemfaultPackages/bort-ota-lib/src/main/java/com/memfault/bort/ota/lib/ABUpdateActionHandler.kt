@@ -131,7 +131,6 @@ class ABUpdateActionHandler @Inject constructor(
                     updater.setState(State.CheckingForUpdates)
                     val ota = softwareUpdateChecker.getLatestRelease()
                     if (ota == null) {
-                        updater.forceUpdate = false
                         updater.setState(State.Idle)
                     } else {
                         cachedOtaProvider.set(ota)

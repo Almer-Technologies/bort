@@ -114,17 +114,16 @@ class OtaApp : Application(), Configuration.Provider, Runnable {
     private val isSetupCompleted: Boolean
         get() = Settings.Secure.getInt(contentResolver, "user_setup_complete", 0) != 0
 
-    public fun launchForceUpdateUI() {
+    fun launchForceUpdateUI() {
         //As per Confluence document: For Android 9 we remove the forced update altogether since it will soon be obsolete.
         //https://almer-ar.atlassian.net/wiki/spaces/Software/pages/155549754/OS+Update+behaviour
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
             Log.i("AlmerOTA", "No Force OTA screen for Android 9")
             return
         }
-        if (updater.forceUpdate) {
-            val intent = Intent(this, UpdateActivity::class.java)
-            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            startActivity(intent)
-        }
+
+        val intent = Intent(this, UpdateActivity::class.java)
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_BROUGHT_TO_FRONT)
+        startActivity(intent)
     }
 }
