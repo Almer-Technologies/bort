@@ -3,6 +3,7 @@ package com.memfault.bort.ota.lib
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.provider.Settings
 import com.memfault.bort.shared.BuildConfig
 import com.memfault.bort.shared.INTENT_ACTION_OTA_SETTINGS_CHANGED
 import com.memfault.bort.shared.InternalMetric
@@ -74,6 +75,17 @@ class BootCompleteReceiver : BroadcastReceiver() {
                 else -> {}
             }
             updater.setState(State.Idle)
+
+            //Check only if user setup is completed.
+            if (Settings.Secure.getInt(context.contentResolver, "user_setup_complete", 0) != 0) {
+                val updater = updater
+                if (updater.updateState.first().allowsUpdateCheck()) {
+                    updater.perform(Action.CheckForUpdate(background = true))
+                    // suspend until the check is complete, perform above does not necessarily block depending on
+                    // the action handler implementation
+                    updater.updateState.first { it != State.CheckingForUpdates }
+                }
+            }
         }
     }
 

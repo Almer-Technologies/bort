@@ -10,6 +10,7 @@ import android.widget.ProgressBar
 import android.widget.TextView
 import androidx.activity.viewModels
 import androidx.appcompat.app.AppCompatActivity
+import androidx.appcompat.app.AppCompatDelegate
 import androidx.core.view.isVisible
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.activityViewModels
@@ -36,10 +37,11 @@ class UpdateActivity : AppCompatActivity() {
         setContentView(R.layout.settings_container)
         setTitle(R.string.app_name)
 
-        supportActionBar?.apply {
-            setHomeAsUpIndicator(R.drawable.ic_baseline_arrow_back_24)
-            setDisplayHomeAsUpEnabled(true)
-        }
+//        supportActionBar?.apply {
+//            setHomeAsUpIndicator(R.drawable.ic_baseline_arrow_back_24)
+//            setDisplayHomeAsUpEnabled(true)
+//        }
+        AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_YES)
 
         val model: UpdateViewModel by viewModels { updateViewModelFactory }
         @Suppress("DEPRECATION")
@@ -168,6 +170,7 @@ class UpdateFailedFragment : Fragment() {
 
 class CheckingForUpdatesFragment : Fragment() {
     lateinit var progressBar: ProgressBar
+    lateinit var textView: TextView
 
     override fun onCreateView(
         inflater: LayoutInflater,
@@ -176,6 +179,7 @@ class CheckingForUpdatesFragment : Fragment() {
     ): View? {
         val layout = inflater.inflate(R.layout.checking_for_updates_layout, container, false)
         progressBar = layout.findViewById(R.id.progress_bar)
+        textView = layout.findViewById(R.id.statusTextView)
         return layout
     }
 
@@ -185,6 +189,9 @@ class CheckingForUpdatesFragment : Fragment() {
             progressBar.min = 0
             progressBar.max = 100
             progressBar.progress = progress
+        }
+        if (this::textView.isInitialized && progress >=0) {
+            textView.text = getString(R.string.downloading_format, progress)
         }
     }
 }
@@ -215,6 +222,7 @@ class UpdateAvailableFragment : Fragment() {
         layout.findViewById<Button>(R.id.maybe_later).setOnClickListener {
             activity?.finish()
         }
+        (layout.findViewById<Button>(R.id.download_update)!!).callOnClick()
         return layout
     }
 }

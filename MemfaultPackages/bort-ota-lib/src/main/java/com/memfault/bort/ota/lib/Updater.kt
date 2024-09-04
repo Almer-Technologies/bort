@@ -33,6 +33,8 @@ class Updater @Inject constructor(
     val updateState: Flow<State> = _updateState.distinctUntilChanged()
 
     fun badCurrentUpdateState(): State = _updateState.replayCache.last()
+    @Volatile
+    var forceUpdate: Boolean = true
 
     private val _events = MutableSharedFlow<Event>()
     val events: SharedFlow<Event> = _events
