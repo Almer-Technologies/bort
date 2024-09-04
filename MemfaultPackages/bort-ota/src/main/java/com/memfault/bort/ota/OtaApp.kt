@@ -114,7 +114,7 @@ class OtaApp : Application(), Configuration.Provider, Runnable {
     private val isSetupCompleted: Boolean
         get() = Settings.Secure.getInt(contentResolver, "user_setup_complete", 0) != 0
 
-    private fun launchForceUpdateUI() {
+    public fun launchForceUpdateUI() {
         //As per Confluence document: For Android 9 we remove the forced update altogether since it will soon be obsolete.
         //https://almer-ar.atlassian.net/wiki/spaces/Software/pages/155549754/OS+Update+behaviour
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {

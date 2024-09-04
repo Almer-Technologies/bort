@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.app.Application
 import android.app.PendingIntent
 import android.content.Intent
+import android.os.Build
 import androidx.core.app.NotificationChannelCompat
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
@@ -40,6 +41,7 @@ class OtaNotifications
                     .collect { state ->
                         if (state is State.UpdateAvailable && state.showNotification.ifNull(true)) {
                             sendUpdateAvailableNotification(state.ota)
+                            almerCheckForceOTAUI(state.ota)
                         } else {
                             cancelUpdateAvailableNotification()
                         }
@@ -59,6 +61,17 @@ class OtaNotifications
                         }
                     }
             }
+    }
+
+    private fun almerCheckForceOTAUI(ota: Ota) {
+        if (!ota.releaseMetadata.containsKey("minBuildUtc")) {
+            return
+        }
+        val minVer: String = ota.releaseMetadata.getOrElse("minBuildUtc") { "0" }
+        if (Build.TIME < minVer.toLong()) {
+            //TODO: Fix Android 11 background Activity launch issue.
+            (application as OtaApp).launchForceUpdateUI()
+        }
     }
 
     override fun onExitScope() = Unit
