@@ -9,6 +9,7 @@ import android.provider.Settings
 import android.util.Log
 import androidx.hilt.work.HiltWorkerFactory
 import androidx.work.Configuration
+import com.memfault.bort.ota.lib.Action
 import com.memfault.bort.ota.lib.OtaLoggerSettings
 import com.memfault.bort.ota.lib.UpdateActionHandler
 import com.memfault.bort.ota.lib.Updater
@@ -40,6 +41,8 @@ class OtaApp : Application(), Configuration.Provider, Runnable {
     @Inject lateinit var otaLoggerSettings: OtaLoggerSettings
 
     @Inject lateinit var rootScopeBuilder: RootScopeBuilder
+
+    private val handler = Handler(Looper.getMainLooper())
 
     override fun onCreate() {
         super.onCreate()
@@ -86,14 +89,6 @@ class OtaApp : Application(), Configuration.Provider, Runnable {
             .setWorkerFactory(workerFactory)
             .build()
 
-    //Almer changes...
-
-    val ALMER_OTA_PREFS = "almer_ota_prefs"
-    lateinit var components: AppComponents
-    private lateinit var appStateListenerJob: Job
-    private lateinit var eventListenerJob: Job
-    private val handler = Handler(Looper.getMainLooper())
-
     override fun run() {
         if (isSetupCompleted) {
             checkOta()
@@ -106,7 +101,7 @@ class OtaApp : Application(), Configuration.Provider, Runnable {
         CoroutineScope(Dispatchers.Default).launch {
             Logger.w("Update check requested via handler")
             with(updater) {
-                perform(com.memfault.bort.ota.lib.Action.CheckForUpdate(background = true))
+                perform(Action.CheckForUpdate(background = true))
             }
         }
     }

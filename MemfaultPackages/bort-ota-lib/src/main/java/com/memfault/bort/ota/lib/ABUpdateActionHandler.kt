@@ -5,6 +5,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.SharedPreferences
 import android.os.BatteryManager
+import android.os.Build
 import android.os.PowerManager
 import android.os.UpdateEngine
 import android.os.UpdateEngineCallback
@@ -171,7 +172,7 @@ class ABUpdateActionHandler @Inject constructor(
                         ),
                     )
                     //rebootDevice()
-                    almerRebootDevice()
+                    almerRebootDevice(ota)
                 } else {
                     Logger.i("Action $action not allowed in state $state (ota = $ota)")
                     updater.setState(State.Idle)
@@ -184,8 +185,16 @@ class ABUpdateActionHandler @Inject constructor(
         }
     }
 
-    private fun almerRebootDevice() {
+    private fun almerRebootDevice(ota: Ota?) {
         try {
+            //For force ota, we should reboot always
+            if (ota?.releaseMetadata?.containsKey("minBuildUtc")!!) {
+                val minVer: String = ota.releaseMetadata.getOrElse("minBuildUtc") { "0" }
+                if (Build.TIME < minVer.toLong()) {
+                    rebootDevice()
+                    return
+                }
+            }
             val batteryStatus: Intent? = IntentFilter(Intent.ACTION_BATTERY_CHANGED).let { ifilter ->
                 application.registerReceiver(null, ifilter)
             }
