@@ -1,7 +1,11 @@
 package com.memfault.bort.ota.lib
 
 import android.app.Application
+import android.content.Intent
+import android.content.IntentFilter
 import android.content.SharedPreferences
+import android.os.BatteryManager
+import android.os.Build
 import android.os.PowerManager
 import android.os.UpdateEngine
 import android.os.UpdateEngineCallback
@@ -15,6 +19,7 @@ import dagger.hilt.components.SingletonComponent
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import java.time.LocalDateTime
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -127,7 +132,6 @@ class ABUpdateActionHandler @Inject constructor(
                     updater.setState(State.CheckingForUpdates)
                     val ota = softwareUpdateChecker.getLatestRelease()
                     if (ota == null) {
-                        updater.forceUpdate = false
                         updater.setState(State.Idle)
                     } else {
                         cachedOtaProvider.set(ota)
@@ -167,7 +171,8 @@ class ABUpdateActionHandler @Inject constructor(
                             updatingFromVersion = settingsProvider.get().currentVersion,
                         ),
                     )
-                    rebootDevice()
+                    //rebootDevice()
+                    almerRebootDevice(ota)
                 } else {
                     Logger.i("Action $action not allowed in state $state (ota = $ota)")
                     updater.setState(State.Idle)
@@ -177,6 +182,54 @@ class ABUpdateActionHandler @Inject constructor(
             else -> {
                 Logger.w("Unhandled action: $action")
             }
+        }
+    }
+
+    private fun almerRebootDevice(ota: Ota?) {
+        try {
+            //For force ota, we should reboot always
+            if (ota?.releaseMetadata?.containsKey("minBuildUtc")!!) {
+                val minVer: String = ota.releaseMetadata.getOrElse("minBuildUtc") { "0" }
+                if (Build.TIME < minVer.toLong()) {
+                    rebootDevice()
+                    return
+                }
+            }
+            val batteryStatus: Intent? = IntentFilter(Intent.ACTION_BATTERY_CHANGED).let { ifilter ->
+                application.registerReceiver(null, ifilter)
+            }
+
+            val batteryPct: Float? = batteryStatus?.let { intent ->
+                val level: Int = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
+                val scale: Int = intent.getIntExtra(BatteryManager.EXTRA_SCALE, -1)
+                level * 100 / scale.toFloat()
+            }
+
+            val status: Int = batteryStatus?.getIntExtra(BatteryManager.EXTRA_STATUS, -1) ?: -1
+            val isCharging: Boolean = status == BatteryManager.BATTERY_STATUS_CHARGING || status == BatteryManager.BATTERY_STATUS_FULL
+
+            if (!isCharging || batteryPct!! < 60) {
+                Log.i(
+                    "AlmerOTA",
+                    "Skipping auto reboot after OTA as battery status is not as expected. Is Charging: $isCharging, Level: $batteryPct"
+                )
+                return
+            }
+            val now = LocalDateTime.now()
+            val _3am = now.withHour(3).withMinute(0).withSecond(0)
+            val _5am = now.withHour(5).withMinute(0).withSecond(0)
+
+            if (now.isBefore(_3am) || now.isAfter(_5am)) {
+                Log.i("AlmerOTA", "Skiping auto reboot after OTA as time is not between 3am and 5am")
+                return
+            }
+
+            rebootDevice()
+
+
+        } catch (e: Exception) {
+            e.printStackTrace()
+            Log.i("AlmerOTA", "Exception occurred during reboot. Doing nothing")
         }
     }
 }
