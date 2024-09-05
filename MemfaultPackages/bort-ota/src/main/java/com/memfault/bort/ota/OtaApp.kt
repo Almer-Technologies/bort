@@ -25,7 +25,6 @@ import com.memfault.bort.shared.isPrimaryUser
 import dagger.hilt.android.HiltAndroidApp
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 import kotlin.system.exitProcess
@@ -75,6 +74,8 @@ class OtaApp : Application(), Configuration.Provider, Runnable {
         //Start this one to check if the OTA should be checked.
         if (!isSetupCompleted) {
             handler.postDelayed(this, 10000)
+        } else {
+            checkOta()
         }
 
     }
