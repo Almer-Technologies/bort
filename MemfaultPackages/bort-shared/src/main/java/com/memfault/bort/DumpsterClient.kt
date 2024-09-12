@@ -2,6 +2,7 @@ package com.memfault.bort
 
 import android.os.PersistableBundle
 import android.os.RemoteException
+import com.memfault.bort.process.ProcessExecutor
 import com.memfault.bort.shared.CONTINUOUS_LOG_DUMP_THRESHOLD_BYTES
 import com.memfault.bort.shared.CONTINUOUS_LOG_DUMP_THRESHOLD_TIME_MS
 import com.memfault.bort.shared.CONTINUOUS_LOG_DUMP_WRAPPING_TIMEOUT_MS
@@ -14,20 +15,14 @@ import com.memfault.dumpster.IDumpster
 import com.memfault.dumpster.IDumpsterBasicCommandListener
 import com.squareup.anvil.annotations.ContributesBinding
 import dagger.hilt.components.SingletonComponent
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeoutOrNull
 import javax.inject.Inject
 import javax.inject.Qualifier
 import javax.inject.Singleton
-import kotlin.annotation.AnnotationRetention.RUNTIME
-import kotlin.annotation.AnnotationTarget.FIELD
-import kotlin.annotation.AnnotationTarget.FUNCTION
-import kotlin.annotation.AnnotationTarget.PROPERTY_GETTER
-import kotlin.annotation.AnnotationTarget.PROPERTY_SETTER
-import kotlin.annotation.AnnotationTarget.VALUE_PARAMETER
 import kotlin.coroutines.resume
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
-import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlinx.coroutines.withTimeoutOrNull
 
 interface DumpsterServiceProvider {
     fun get(logIfMissing: Boolean = true): IDumpster?
@@ -37,7 +32,7 @@ interface DumpsterServiceProvider {
 class DefaultDumpsterServiceProvider @Inject constructor() : DumpsterServiceProvider {
     override fun get(logIfMissing: Boolean): IDumpster? {
         val dumpster: IDumpster? = IDumpster.Stub.asInterface(
-            ServiceManagerProxy.getService(DUMPSTER_SERVICE_NAME)
+            ServiceManagerProxy.getService(DUMPSTER_SERVICE_NAME),
         )
         if (dumpster == null) {
             if (logIfMissing) {
@@ -72,7 +67,7 @@ private class WrappedService(val service: IDumpster, val basicCommandTimeout: Lo
                             Logger.e("runBasicCommand $cmdId is not supported")
                             cont.resume(null)
                         }
-                    }
+                    },
                 )
             } catch (e: RemoteException) {
                 cont.resume(null)
@@ -106,13 +101,12 @@ private class WrappedService(val service: IDumpster, val basicCommandTimeout: Lo
 }
 
 @Qualifier
-@Retention(RUNTIME)
-@Target(FIELD, VALUE_PARAMETER, FUNCTION, PROPERTY_GETTER, PROPERTY_SETTER)
-annotation class BasicCommandTimout
+annotation class BasicCommandTimeout
 
 class DumpsterClient @Inject constructor(
-    val serviceProvider: DumpsterServiceProvider,
-    @BasicCommandTimout val basicCommandTimeout: Long,
+    private val serviceProvider: DumpsterServiceProvider,
+    @BasicCommandTimeout private val basicCommandTimeout: Long,
+    private val processExecutor: ProcessExecutor,
 ) {
     private fun getServiceSilently(): IDumpster? = serviceProvider.get(logIfMissing = false)
 
@@ -126,34 +120,44 @@ class DumpsterClient @Inject constructor(
         block: WrappedService.() -> R,
     ): R? =
         serviceProvider.get()?.let {
-            if (it.getVersion() >= minimumVersion) with(
-                WrappedService(
-                    service = it,
-                    basicCommandTimeout = basicCommandTimeout
-                ),
-                block
-            ) else null
+            if (it.getVersion() >= minimumVersion) {
+                with(
+                    WrappedService(
+                        service = it,
+                        basicCommandTimeout = basicCommandTimeout,
+                    ),
+                    block,
+                )
+            } else {
+                null
+            }
         }
 
     /**
      * Gets all system properties by running the 'getprop' program.
      * @return All system properties, or null in case they could not be retrieved.
      */
-    suspend fun getprop(): Map<String, String>? = withService(minimumVersion = IDumpster.VERSION_INITIAL) {
-        return runBasicCommand(IDumpster.CMD_ID_GETPROP)?.let {
-            parseGetpropOutput(it)
+    suspend fun getprop(): Map<String, String>? =
+        withService<Map<String, String>?>(minimumVersion = IDumpster.VERSION_INITIAL) {
+            return runBasicCommand(IDumpster.CMD_ID_GETPROP)?.let {
+                parseGetpropOutput(it)
+            }
+            // Bort Lite: fall back to getting whatever sysprops we are allowed to, locally.
+        } ?: processExecutor.execute(listOf("/system/bin/getprop")) {
+            parseGetpropOutput(it.reader().readText())
         }
-    }
 
     /**
-     * Gets all system property types by running the 'getprop -T' program.
-     * @return All system propertiy types, or null in case they could not be retrieved.
+     * @return All system property types, or null in case they could not be retrieved.
      */
-    suspend fun getpropTypes(): Map<String, String>? = withService(minimumVersion = IDumpster.VERSION_GETPROP_TYPES) {
-        return runBasicCommand(IDumpster.CMD_ID_GETPROP_TYPES)?.let {
-            parseGetpropOutput(it)
-        }
-    }
+    suspend fun getpropTypes(): Map<String, String>? =
+        withService<Map<String, String>?>(minimumVersion = IDumpster.VERSION_GETPROP_TYPES) {
+            return runBasicCommand(IDumpster.CMD_ID_GETPROP_TYPES)?.let {
+                parseGetpropOutput(it)
+            }
+        } ?: processExecutor.execute(listOf("/system/bin/getprop", "-T")) {
+            parseGetpropOutput(it.reader().readText())
+        } ?: emptyMap() // Types aren't available on Android 8 - fails if we don't do this
 
     /**
      * Sets a system property (persist.system.memfault.bort.enabled) so that other components may enable / disable
@@ -162,8 +166,11 @@ class DumpsterClient @Inject constructor(
     suspend fun setBortEnabled(enabled: Boolean) {
         withService(minimumVersion = IDumpster.VERSION_BORT_ENABLED_PROPERTY) {
             runBasicCommand(
-                if (enabled) IDumpster.CMD_ID_SET_BORT_ENABLED_PROPERTY_ENABLED
-                else IDumpster.CMD_ID_SET_BORT_ENABLED_PROPERTY_DISABLED
+                if (enabled) {
+                    IDumpster.CMD_ID_SET_BORT_ENABLED_PROPERTY_ENABLED
+                } else {
+                    IDumpster.CMD_ID_SET_BORT_ENABLED_PROPERTY_DISABLED
+                },
             )
         }
     }
@@ -175,8 +182,11 @@ class DumpsterClient @Inject constructor(
     suspend fun setStructuredLogEnabled(enabled: Boolean) {
         withService(minimumVersion = IDumpster.VERSION_BORT_ENABLED_PROPERTY) {
             runBasicCommand(
-                if (enabled) IDumpster.CMD_ID_SET_STRUCTURED_ENABLED_PROPERTY_ENABLED
-                else IDumpster.CMD_ID_SET_STRUCTURED_ENABLED_PROPERTY_DISABLED
+                if (enabled) {
+                    IDumpster.CMD_ID_SET_STRUCTURED_ENABLED_PROPERTY_ENABLED
+                } else {
+                    IDumpster.CMD_ID_SET_STRUCTURED_ENABLED_PROPERTY_DISABLED
+                },
             )
         }
     }
@@ -195,7 +205,8 @@ class DumpsterClient @Inject constructor(
             bundle.putInt(CONTINUOUS_LOG_DUMP_THRESHOLD_BYTES, continuousLogDumpThresholdBytes)
             bundle.putLong(
                 CONTINUOUS_LOG_DUMP_THRESHOLD_TIME_MS,
-                continuousLogDumpThresholdTime.inWholeMilliseconds - CONTINUOUS_LOG_THRESHOLD_MARGIN.inWholeMilliseconds
+                continuousLogDumpThresholdTime.inWholeMilliseconds -
+                    CONTINUOUS_LOG_THRESHOLD_MARGIN.inWholeMilliseconds,
             )
             bundle.putLong(
                 CONTINUOUS_LOG_DUMP_WRAPPING_TIMEOUT_MS,
@@ -210,6 +221,11 @@ class DumpsterClient @Inject constructor(
             stopContinuousLogging()
         }
     }
+
+    suspend fun getChargeCycleCount(): Int? =
+        withService<Int?>(minimumVersion = IDumpster.VERSION_CYCLE_COUNT) {
+            return runBasicCommand(IDumpster.CMD_ID_CYCLE_COUNT)?.toIntOrNull()
+        }
 
     /**
      * Gets the available version of the MemfaultDumpster service, or null if the service is not available.

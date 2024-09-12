@@ -16,10 +16,11 @@ private const val ID = "ID"
 private val UUID_NULL = UUID.fromString("00000000-0000-0000-0000-000000000000")
 
 data class CommandRunnerOptions(
+    // Only sent from Bort until 4.7.0. Created inside Reporter from 4.8.0.
     val outFd: ParcelFileDescriptor?,
     val redirectErr: Boolean = false,
     val timeout: Duration = DEFAULT_TIMEOUT,
-    val id: UUID = UUID.randomUUID()
+    val id: UUID = UUID.randomUUID(),
 ) {
     fun toBundle(): Bundle =
         Bundle().apply {
@@ -32,11 +33,12 @@ data class CommandRunnerOptions(
     companion object {
         val DEFAULT_TIMEOUT = 5.seconds
 
+        @Suppress("DEPRECATION")
         fun fromBundle(bundle: Bundle) = CommandRunnerOptions(
             bundle.getParcelable(OUT_FD),
             bundle.getBoolean(REDIRECT_ERR),
             bundle.getLong(TIMEOUT_MILLIS).milliseconds,
-            bundle.getParcelable<ParcelUuid>(ID)?.uuid ?: UUID_NULL
+            bundle.getParcelable<ParcelUuid>(ID)?.uuid ?: UUID_NULL,
         )
     }
 }

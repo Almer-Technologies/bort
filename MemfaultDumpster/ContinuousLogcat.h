@@ -83,14 +83,17 @@ class ContinuousLogcat {
         uint64_t dump_wrapping_timeout_ms
     );
 
-    void start();
+    void start(bool start_from_previous_config = false);
     void stop();
     void join();
+    void request_dump();
 
-  private:
+   private:
+    void interrupt_reader_thread();
     void run();
     void dump_output(bool ignore_thresholds = false);
     void dump_output_to_dropbox();
+    void rebuild_log_format(const std::vector<std::string>& filter_specs);
 
     std::mutex log_lock;
 

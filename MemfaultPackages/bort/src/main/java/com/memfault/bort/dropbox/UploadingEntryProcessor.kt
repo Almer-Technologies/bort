@@ -8,8 +8,8 @@ import com.memfault.bort.TimezoneWithId
 import com.memfault.bort.clientserver.MarMetadata.DropBoxMarMetadata
 import com.memfault.bort.logcat.NextLogcatCidProvider
 import com.memfault.bort.metrics.BuiltinMetricsStore
+import com.memfault.bort.metrics.CrashHandler
 import com.memfault.bort.metrics.metricForTraceTag
-import com.memfault.bort.time.AbsoluteTime
 import com.memfault.bort.time.BootRelativeTimeProvider
 import com.memfault.bort.time.CombinedTimeProvider
 import com.memfault.bort.time.toAbsoluteTime
@@ -31,6 +31,8 @@ interface UploadingEntryProcessorDelegate {
     fun isTraceEntry(entry: DropBoxManager.Entry): Boolean = true
 
     fun scrub(inputFile: File, tag: String): File = inputFile
+
+    fun isCrash(entry: DropBoxManager.Entry, entryFile: File): Boolean
 }
 
 data class EntryInfo(
@@ -49,11 +51,12 @@ class UploadingEntryProcessor<T : UploadingEntryProcessorDelegate> @Inject const
     private val packageNameAllowList: PackageNameAllowList,
     private val handleEventOfInterest: HandleEventOfInterest,
     private val combinedTimeProvider: CombinedTimeProvider,
+    private val crashHandler: CrashHandler,
 ) : EntryProcessor() {
     override val tags: List<String>
         get() = delegate.tags
 
-    override suspend fun process(entry: DropBoxManager.Entry, fileTime: AbsoluteTime?) {
+    override suspend fun process(entry: DropBoxManager.Entry) {
         tempFileFactory.createTemporaryFile(entry.tag, ".txt").useFile { tempFile, preventDeletion ->
             tempFile.outputStream().use { outStream ->
                 val copiedBytes = entry.inputStream.use { inStream ->
@@ -70,6 +73,13 @@ class UploadingEntryProcessor<T : UploadingEntryProcessorDelegate> @Inject const
 
             builtinMetricsStore.increment(metricForTraceTag(entry.tag))
 
+            val fileTime = entry.timeMillis.toAbsoluteTime()
+
+            // The crash rate should be incremented even if this dropbox trace would be rate limited.
+            if (delegate.isCrash(entry, tempFile)) {
+                crashHandler.onCrash(crashTimestamp = fileTime.timestamp)
+            }
+
             if (!delegate.allowedByRateLimit(info.tokenBucketKey, entry.tag)) {
                 return
             }
@@ -82,7 +92,7 @@ class UploadingEntryProcessor<T : UploadingEntryProcessorDelegate> @Inject const
                 metadata = DropBoxMarMetadata(
                     entryFileName = fileToUpload.name,
                     tag = entry.tag,
-                    entryTime = entry.timeMillis.toAbsoluteTime(),
+                    entryTime = fileTime,
                     timezone = TimezoneWithId.deviceDefault,
                     cidReference = nextLogcatCidProvider.cid,
                     packages = info.packages,

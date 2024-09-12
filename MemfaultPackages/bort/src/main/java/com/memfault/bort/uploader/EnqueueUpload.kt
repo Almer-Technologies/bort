@@ -3,8 +3,10 @@ package com.memfault.bort.uploader
 import android.app.Application
 import androidx.work.BackoffPolicy
 import com.memfault.bort.DeviceInfoProvider
+import com.memfault.bort.IO
 import com.memfault.bort.Payload
 import com.memfault.bort.clientserver.MarFileHoldingArea
+import com.memfault.bort.clientserver.MarFileWithManifest
 import com.memfault.bort.clientserver.MarFileWriter
 import com.memfault.bort.clientserver.MarMetadata
 import com.memfault.bort.clientserver.MarMetadata.Companion.createManifest
@@ -16,13 +18,12 @@ import com.memfault.bort.settings.UploadConstraints
 import com.memfault.bort.shared.JitterDelayProvider
 import com.memfault.bort.shared.Logger
 import com.memfault.bort.time.CombinedTime
+import kotlinx.coroutines.withContext
 import java.io.File
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlin.coroutines.CoroutineContext
 import kotlin.time.toJavaDuration
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
 
 /**
  * Enqueue a file or event for upload.
@@ -35,35 +36,42 @@ class EnqueueUpload @Inject constructor(
     private val marHoldingArea: MarFileHoldingArea,
     private val deviceInfoProvider: DeviceInfoProvider,
     private val projectKey: ProjectKey,
+    @IO private val ioCoroutineContext: CoroutineContext,
 ) {
     /**
      * Enqueue a file for upload.
      */
-    fun enqueue(
+    suspend fun enqueue(
         file: File?,
         metadata: MarMetadata,
         collectionTime: CombinedTime,
         /**
+         * Set to override the monitoring resolution from its default.
+         * Null/unset = default for type (as defined during manifest creation).
+         **/
+        overrideMonitoringResolution: Resolution? = null,
+        /**
          * Set to override the debugging resolution from its default.
          * Null/unset = default for type (as defined during manifest creation).
          *
-         * Note: the only type that ever changes a reoslution is logging for the debugging aspect. Add more overrides
+         * Note: the only type that ever changes a resolution is logging for the debugging aspect. Add more overrides
          * here if we ever need them.
          **/
         overrideDebuggingResolution: Resolution? = null,
-    ) {
-        CoroutineScope(Dispatchers.IO).launch {
-            var manifest = createManifest(metadata, collectionTime, deviceInfoProvider, projectKey)
-            overrideDebuggingResolution?.let {
-                manifest = manifest.copy(debuggingResolution = it)
-            }
-            val marFileWriteResult = marFileWriter.createMarFile(file, manifest)
-
-            file?.deleteSilently()
-            marFileWriteResult
-                .onSuccess { marFile -> marHoldingArea.addMarFile(marFile) }
-                .onFailure { e -> Logger.w("Error writing mar file.", e) }
+    ): Result<MarFileWithManifest> = withContext(ioCoroutineContext) {
+        var manifest = createManifest(metadata, collectionTime, deviceInfoProvider, projectKey)
+        overrideMonitoringResolution?.let {
+            manifest = manifest.copy(monitoringResolution = it)
         }
+        overrideDebuggingResolution?.let {
+            manifest = manifest.copy(debuggingResolution = it)
+        }
+        val marFileWriteResult = marFileWriter.createMarFile(file, manifest)
+
+        file?.deleteSilently()
+        marFileWriteResult
+            .onSuccess { marFile -> marHoldingArea.addMarFile(marFile) }
+            .onFailure { e -> Logger.w("Error writing mar file.", e) }
     }
 }
 
@@ -84,10 +92,10 @@ class EnqueuePreparedUploadTask @Inject constructor(
     ) {
         enqueueWorkOnce<FileUploadTask>(
             application,
-            FileUploadTaskInput(file, metadata, shouldCompress).toWorkerInputData()
+            FileUploadTaskInput(file, metadata, shouldCompress).toWorkerInputData(),
         ) {
             if (applyJitter) {
-                setInitialDelay(jitterDelayProvider.randomJitterDelay())
+                setInitialDelay(jitterDelayProvider.randomJitterDelay().toJavaDuration())
             }
             setConstraints(constraints())
             setBackoffCriteria(BackoffPolicy.EXPONENTIAL, BACKOFF_DURATION.toJavaDuration())

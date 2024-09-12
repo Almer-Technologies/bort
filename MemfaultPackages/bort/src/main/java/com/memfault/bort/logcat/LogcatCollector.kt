@@ -1,11 +1,13 @@
 package com.memfault.bort.logcat
 
+import android.os.Build
 import android.os.Process
 import android.os.RemoteException
 import com.github.michaelbull.result.andThen
 import com.github.michaelbull.result.map
 import com.github.michaelbull.result.onFailure
 import com.github.michaelbull.result.toErrorIf
+import com.memfault.bort.BortSystemCapabilities
 import com.memfault.bort.DataScrubber
 import com.memfault.bort.LogcatCollectionId
 import com.memfault.bort.PackageManagerClient
@@ -15,6 +17,7 @@ import com.memfault.bort.TemporaryFileFactory
 import com.memfault.bort.parsers.LogcatLine
 import com.memfault.bort.parsers.PackageManagerReport
 import com.memfault.bort.parsers.toLogcatLines
+import com.memfault.bort.process.ProcessExecutor
 import com.memfault.bort.settings.LogcatSettings
 import com.memfault.bort.shared.LogcatBufferId
 import com.memfault.bort.shared.LogcatCommand
@@ -25,6 +28,13 @@ import com.memfault.bort.shared.Logger
 import com.memfault.bort.time.AbsoluteTime
 import com.memfault.bort.time.AbsoluteTimeProvider
 import com.memfault.bort.time.BaseAbsoluteTime
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.asFlow
+import kotlinx.coroutines.flow.lastOrNull
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.mapNotNull
+import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.withContext
 import java.io.BufferedWriter
 import java.io.File
 import java.io.OutputStream
@@ -34,8 +44,6 @@ import java.time.ZoneOffset
 import javax.inject.Inject
 import javax.inject.Provider
 import kotlin.time.Duration
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 
 data class LogcatCollectorResult(
     val command: LogcatCommand,
@@ -47,8 +55,17 @@ data class LogcatCollectorResult(
 
 class LogcatRunner @Inject constructor(
     private val reporterServiceConnector: ReporterServiceConnector,
+    private val processExecutor: ProcessExecutor,
+    private val bortSystemCapabilities: BortSystemCapabilities,
 ) {
-    suspend fun runLogcat(
+    private suspend fun runLogcatLocally(
+        outputStream: OutputStream,
+        command: LogcatCommand,
+    ) {
+        processExecutor.execute(command.toList()) { it.copyTo(outputStream) }
+    }
+
+    suspend fun runLogcatUsingReporter(
         outputStream: OutputStream,
         command: LogcatCommand,
         timeout: Duration,
@@ -56,7 +73,9 @@ class LogcatRunner @Inject constructor(
         reporterServiceConnector.connect { getClient ->
             getClient().logcatRun(command, timeout) { invocation ->
                 invocation.awaitInputStream().map { stream ->
-                    stream.copyTo(outputStream)
+                    stream.use {
+                        stream.copyTo(outputStream)
+                    }
                 }.andThen {
                     invocation.awaitResponse(timeout).toErrorIf({ it.exitCode != 0 }) {
                         Exception("Remote error: $it")
@@ -66,6 +85,27 @@ class LogcatRunner @Inject constructor(
         } onFailure {
             throw it
         }
+    }
+
+    suspend fun runLogcat(
+        outputStream: OutputStream,
+        command: LogcatCommand,
+        timeout: Duration,
+        sdkVersion: Int,
+    ) {
+        if (sdkVersion >= SDK_VERSION_LOGCAT_NEEDS_SYSTEM_UID &&
+            bortSystemCapabilities.reporterServiceVersion.get() != null
+        ) {
+            Logger.d("Running logcat using reporter")
+            runLogcatUsingReporter(outputStream, command, timeout)
+        } else {
+            Logger.d("Running logcat using local")
+            runLogcatLocally(outputStream, command)
+        }
+    }
+
+    companion object {
+        private const val SDK_VERSION_LOGCAT_NEEDS_SYSTEM_UID = 33
     }
 }
 
@@ -77,23 +117,28 @@ class LogcatCollector @Inject constructor(
     private val logcatRunner: LogcatRunner,
     private val now: AbsoluteTimeProvider,
     private val kernelOopsDetector: Provider<LogcatLineProcessor>,
+    private val selinuxViolationLogcatDetector: SelinuxViolationLogcatDetector,
     private val packageManagerClient: PackageManagerClient,
     private val packageNameAllowList: PackageNameAllowList,
     private val dataScrubber: DataScrubber,
+    private val storagedDiskWearLogcatDetector: StoragedDiskWearLogcatDetector,
 ) {
     suspend fun collect(): LogcatCollectorResult {
         temporaryFileFactory.createTemporaryFile(
-            "logcat", suffix = ".txt"
+            "logcat",
+            suffix = ".txt",
         ).useFile { file, preventDeletion ->
             val command = logcatCommand(
                 since = nextLogcatStartTimeProvider.nextStart,
                 filterSpecs = logcatSettings.filterSpecs,
             )
+            val packageManagerReport = packageManagerClient.getPackageManagerReport()
+
             val logcatOutput = runLogcat(
                 outputFile = file,
                 command = command,
-                allowedUids = packageManagerClient.getPackageManagerReport()
-                    .toAllowedUids(packageNameAllowList)
+                allowedUids = packageManagerReport.toAllowedUids(packageNameAllowList),
+                packageManagerReport = packageManagerReport,
             )
             nextLogcatStartTimeProvider.nextStart = logcatOutput.lastLogTimeOrFallback
             val (cid, nextCid) = nextLogcatCidProvider.rotate()
@@ -108,7 +153,10 @@ class LogcatCollector @Inject constructor(
         }
     }
 
-    private fun logcatCommand(since: BaseAbsoluteTime, filterSpecs: List<LogcatFilterSpec>) =
+    private fun logcatCommand(
+        since: BaseAbsoluteTime,
+        filterSpecs: List<LogcatFilterSpec>,
+    ) =
         LogcatCommand(
             dumpAndExit = true,
             dividers = true,
@@ -117,7 +165,7 @@ class LogcatCollector @Inject constructor(
             recentSince = LocalDateTime.ofEpochSecond(
                 since.timestamp.epochSecond,
                 since.timestamp.nano,
-                ZoneOffset.UTC
+                ZoneOffset.UTC,
             ),
             format = LogcatFormat.THREADTIME,
             formatModifiers = listOf(
@@ -141,27 +189,32 @@ class LogcatCollector @Inject constructor(
         outputFile: File,
         command: LogcatCommand,
         allowedUids: Set<Int>,
+        packageManagerReport: PackageManagerReport,
     ): LogcatOutput = withContext(Dispatchers.IO) {
         val kernelOopsDetector = kernelOopsDetector.get()
 
         val lastLogTime = try {
             outputFile.outputStream().use {
-                logcatRunner.runLogcat(it, command, logcatSettings.commandTimeout)
+                logcatRunner.runLogcat(it, command, logcatSettings.commandTimeout, Build.VERSION.SDK_INT)
             }
 
             outputFile.bufferedReader().useLines { lines ->
                 temporaryFileFactory.createTemporaryFile(
-                    prefix = "logcat-scrubbed", suffix = ".txt"
+                    prefix = "logcat-scrubbed",
+                    suffix = ".txt",
                 ).useFile { scrubbedFile, preventScrubbedDeletion ->
                     scrubbedFile.outputStream().bufferedWriter().use { scrubbedWriter ->
                         val scrubber = dataScrubber
-                        lines.toLogcatLines(command)
-                            .onEach { kernelOopsDetector.process(it) }
+                        lines.toLogcatLines(command).asFlow()
+                            .onEach {
+                                selinuxViolationLogcatDetector.process(it, packageManagerReport)
+                                kernelOopsDetector.process(it)
+                                storagedDiskWearLogcatDetector.detect(it)
+                            }
                             .map { it.scrub(scrubber, allowedUids) }
                             .onEach { it.writeTo(scrubbedWriter) }
-                            .asIterable()
-                            .lastOrNull { it.logTime != null }
-                            ?.logTime
+                            .mapNotNull { it.logTime }
+                            .lastOrNull()
                     }.also {
                         preventScrubbedDeletion()
                         scrubbedFile.renameTo(outputFile)
@@ -195,14 +248,18 @@ internal fun PackageManagerReport.toAllowedUids(allowList: PackageNameAllowList)
         .mapNotNull { it.userId }
         .toSet()
 
-internal fun LogcatLine.scrub(scrubber: DataScrubber, allowedUids: Set<Int>) = copy(
+internal fun LogcatLine.scrub(
+    scrubber: DataScrubber,
+    allowedUids: Set<Int>,
+) = copy(
     message = message?.let { msg ->
         when {
             uid != null && uid >= Process.FIRST_APPLICATION_UID && allowedUids.isNotEmpty() && uid !in allowedUids ->
                 scrubber.scrubEntirely(msg)
+
             else -> scrubber(msg)
         }
-    }
+    },
 )
 
 internal fun LogcatLine.writeTo(writer: BufferedWriter) {

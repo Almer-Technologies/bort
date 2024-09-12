@@ -3,25 +3,19 @@ package com.memfault.usagereporter
 import android.app.Service
 import android.content.Context
 import android.content.Intent
-import android.content.SharedPreferences
 import android.os.DropBoxManager
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.IBinder
 import android.os.Message
 import android.os.Messenger
+import android.os.ParcelFileDescriptor
 import android.os.Process.THREAD_PRIORITY_BACKGROUND
 import android.os.RemoteException
-import androidx.preference.PreferenceManager
 import com.memfault.bort.shared.CommandRunnerOptions
-import com.memfault.bort.shared.DropBoxGetNextEntryRequest
-import com.memfault.bort.shared.DropBoxGetNextEntryResponse
-import com.memfault.bort.shared.DropBoxSetTagFilterRequest
-import com.memfault.bort.shared.DropBoxSetTagFilterResponse
 import com.memfault.bort.shared.ErrorResponse
 import com.memfault.bort.shared.LogLevel
 import com.memfault.bort.shared.Logger
-import com.memfault.bort.shared.PreferenceKeyProvider
 import com.memfault.bort.shared.REPORTER_SERVICE_VERSION
 import com.memfault.bort.shared.ReporterServiceMessage
 import com.memfault.bort.shared.RunCommandContinue
@@ -52,60 +46,17 @@ private const val COMMAND_EXECUTOR_TERMINATION_WAIT_SECS: Long = 30
 
 typealias SendReply = (reply: ServiceMessage) -> Unit
 
-interface DropBoxFilterSettingsProvider {
-    var includedTags: Set<String>
-}
-
-interface LogLevelPreferenceProvider {
-    fun setLogLevel(logLevel: LogLevel)
-    fun getLogLevel(): LogLevel
-}
-
-class DropBoxMessageHandler(
-    private val getDropBoxManager: () -> DropBoxManager?,
-    private val filterSettingsProvider: DropBoxFilterSettingsProvider
-) {
-    fun handleSetTagFilterMessage(message: DropBoxSetTagFilterRequest, sendReply: SendReply) {
-        filterSettingsProvider.includedTags = message.includedTags.toSet()
-        sendReply(DropBoxSetTagFilterResponse())
-    }
-
-    fun handleGetNextEntryRequest(request: DropBoxGetNextEntryRequest, sendReply: SendReply) {
-        val db = getDropBoxManager() ?: return sendReply(ErrorResponse("Failed to get DropBoxManager"))
-
-        try {
-            findFirstMatchingEntry(db, request.lastTimeMillis).use {
-                sendReply(DropBoxGetNextEntryResponse(it))
-            }
-        } catch (e: Exception) {
-            sendReply(ErrorResponse.fromException(e))
-        }
-    }
-
-    private fun findFirstMatchingEntry(db: DropBoxManager, lastTimeMillis: Long): DropBoxManager.Entry? {
-        val includedTagsSet = filterSettingsProvider.includedTags
-        var cursorTimeMillis = lastTimeMillis
-        while (true) {
-            val entry = db.getNextEntry(null, cursorTimeMillis)
-            if (entry == null) return null
-            if (entry.tag in includedTagsSet) return entry
-            entry.close()
-            cursorTimeMillis = entry.timeMillis
-        }
-    }
-}
-
 // android.os.Message cannot be instantiated in unit tests. The odd code splitting & injecting is
 // done to keep the toMessage() and fromMessage() out of the main body of code.
 class ReporterServiceMessageHandler(
     private val enqueueCommand: (List<String>, CommandRunnerOptions, CommandRunnerReportResult) -> CommandRunner,
-    private val dropBoxMessageHandler: DropBoxMessageHandler,
     private val serviceMessageFromMessage: (message: Message) -> ReporterServiceMessage,
     private val setLogLevel: (logLevel: LogLevel) -> Unit,
     private val getSendReply: (message: Message) -> SendReply,
     private val b2BClientServer: B2BClientServer,
     private val reporterMetrics: ReporterMetrics,
     private val reporterSettings: ReporterSettingsPreferenceProvider,
+    private val createPipe: CreatePipe,
 ) : Handler.Callback {
 
     override fun handleMessage(message: Message): Boolean {
@@ -119,7 +70,7 @@ class ReporterServiceMessageHandler(
 
     internal fun handleServiceMessage(
         serviceMessage: ReporterServiceMessage?,
-        message: Message
+        message: Message,
     ): Boolean {
         Logger.v("Got serviceMessage: $serviceMessage")
 
@@ -136,10 +87,6 @@ class ReporterServiceMessageHandler(
         when (serviceMessage) {
             is RunCommandRequest<*> -> handleRunCommandRequest(serviceMessage, sendReply)
             is SetLogLevelRequest -> handleSetLogLevelRequest(serviceMessage.level, sendReply)
-            is DropBoxSetTagFilterRequest ->
-                dropBoxMessageHandler.handleSetTagFilterMessage(serviceMessage, sendReply)
-            is DropBoxGetNextEntryRequest ->
-                dropBoxMessageHandler.handleGetNextEntryRequest(serviceMessage, sendReply)
             is VersionRequest -> handleVersionRequest(sendReply)
             is ServerSendFileRequest -> handleSendFileRequest(serviceMessage, sendReply)
             is SetMetricCollectionIntervalRequest -> handleSetMetricIntervalRequest(serviceMessage.interval, sendReply)
@@ -155,13 +102,19 @@ class ReporterServiceMessageHandler(
         return true
     }
 
-    private fun handleSettingsUpdate(message: SetReporterSettingsRequest, sendReply: (reply: ServiceMessage) -> Unit) {
+    private fun handleSettingsUpdate(
+        message: SetReporterSettingsRequest,
+        sendReply: (reply: ServiceMessage) -> Unit,
+    ) {
         reporterSettings.set(message)
         // Take any actions required after settings have been updated here.
         sendReply(SetReporterSettingsResponse)
     }
 
-    private fun handleSendFileRequest(message: ServerSendFileRequest, sendReply: (reply: ServiceMessage) -> Unit) {
+    private fun handleSendFileRequest(
+        message: ServerSendFileRequest,
+        sendReply: (reply: ServiceMessage) -> Unit,
+    ) {
         b2BClientServer.enqueueFile(message.dropboxTag, message.descriptor)
         sendReply(ServerSendFileResponse)
     }
@@ -170,12 +123,18 @@ class ReporterServiceMessageHandler(
         sendReply(VersionResponse(REPORTER_SERVICE_VERSION))
     }
 
-    private fun handleSetLogLevelRequest(level: LogLevel, sendReply: (reply: ServiceMessage) -> Unit) {
+    private fun handleSetLogLevelRequest(
+        level: LogLevel,
+        sendReply: (reply: ServiceMessage) -> Unit,
+    ) {
         setLogLevel(level)
         sendReply(SetLogLevelResponse)
     }
 
-    private fun handleSetMetricIntervalRequest(interval: Duration, sendReply: (reply: ServiceMessage) -> Unit) {
+    private fun handleSetMetricIntervalRequest(
+        interval: Duration,
+        sendReply: (reply: ServiceMessage) -> Unit,
+    ) {
         reporterMetrics.setCollectionInterval(interval)
         sendReply(SetMetricCollectionIntervalResponse)
     }
@@ -184,8 +143,10 @@ class ReporterServiceMessageHandler(
         val reportResult: CommandRunnerReportResult = { exitCode, didTimeout ->
             sendReply(RunCommandResponse(exitCode, didTimeout))
         }
-        enqueueCommand(request.command.toList(), request.runnerOptions, reportResult)
-        sendReply(RunCommandContinue())
+        val (readFd, writeFd) = createPipe()
+        enqueueCommand(request.command.toList(), request.runnerOptions.copy(outFd = writeFd), reportResult)
+        sendReply(RunCommandContinue(readFd))
+        readFd.close()
     }
 }
 
@@ -193,7 +154,10 @@ class ReporterServiceMessageHandler(
 class ReporterService : Service() {
 
     @Inject lateinit var reporterMetrics: ReporterMetrics
+
     @Inject lateinit var reporterSettingsPreferenceProvider: ReporterSettingsPreferenceProvider
+
+    @Inject lateinit var logLevelPreferenceProvider: LogLevelPreferenceProvider
 
     private var messenger: Messenger? = null
     private lateinit var commandExecutor: TimeoutThreadPoolExecutor
@@ -208,15 +172,8 @@ class ReporterService : Service() {
         }
         commandExecutor = TimeoutThreadPoolExecutor(COMMAND_EXECUTOR_MAX_THREADS)
 
-        val preferenceManager = PreferenceManager.getDefaultSharedPreferences(this)
-        val logLevelPreferenceProvider = RealLogLevelPreferenceProvider(preferenceManager)
-
         messageHandler = ReporterServiceMessageHandler(
             enqueueCommand = ::enqueueCommand,
-            dropBoxMessageHandler = DropBoxMessageHandler(
-                getDropBoxManager = ::getDropBoxManager,
-                filterSettingsProvider = RealDropBoxFilterSettingsProvider(preferenceManager)
-            ),
             serviceMessageFromMessage = ReporterServiceMessage.Companion::fromMessage,
             setLogLevel = { logLevel ->
                 logLevelPreferenceProvider.setLogLevel(logLevel)
@@ -227,6 +184,7 @@ class ReporterService : Service() {
             b2BClientServer = b2bClientServer,
             reporterMetrics = reporterMetrics,
             reporterSettings = reporterSettingsPreferenceProvider,
+            createPipe = ParcelFileDescriptor::createPipe,
         )
     }
 
@@ -241,7 +199,7 @@ class ReporterService : Service() {
 
         val timedOut = !commandExecutor.awaitTermination(
             COMMAND_EXECUTOR_TERMINATION_WAIT_SECS,
-            TimeUnit.SECONDS
+            TimeUnit.SECONDS,
         )
         Logger.v("commandExecutor shut down! (timedOut=$timedOut)")
 
@@ -251,7 +209,7 @@ class ReporterService : Service() {
     private fun enqueueCommand(
         command: List<String>,
         runnerOptions: CommandRunnerOptions,
-        reportResult: CommandRunnerReportResult
+        reportResult: CommandRunnerReportResult,
     ): CommandRunner =
         CommandRunner(command, runnerOptions, reportResult).also {
             commandExecutor.submitWithTimeout(it, runnerOptions.timeout)
@@ -282,33 +240,3 @@ class ReporterService : Service() {
 
 fun Context.getDropBoxManager(): DropBoxManager? =
     getSystemService(Service.DROPBOX_SERVICE) as DropBoxManager?
-
-class RealDropBoxFilterSettingsProvider
-@Inject constructor(
-    sharedPreferences: SharedPreferences
-) : DropBoxFilterSettingsProvider, PreferenceKeyProvider<Set<String>>(
-    sharedPreferences = sharedPreferences,
-    defaultValue = emptySet(),
-    preferenceKey = PREFERENCE_DROPBOX_INCLUDED_ENTRY_TAGS
-) {
-    override var includedTags
-        get() = super.getValue()
-        set(value) = super.setValue(value)
-}
-
-class RealLogLevelPreferenceProvider(
-    sharedPreferences: SharedPreferences,
-) : LogLevelPreferenceProvider, PreferenceKeyProvider<Int>(
-    sharedPreferences = sharedPreferences,
-    // Defaults to test (just until updated level is received + persisted) - otherwise we might miss logs when
-    // restarting the process during E2E tests.
-    defaultValue = LogLevel.TEST.level,
-    preferenceKey = PREFERENCE_LOG_LEVEL,
-) {
-    override fun setLogLevel(logLevel: LogLevel) {
-        super.setValue(logLevel.level)
-    }
-
-    override fun getLogLevel(): LogLevel =
-        LogLevel.fromInt(super.getValue()) ?: LogLevel.TEST
-}

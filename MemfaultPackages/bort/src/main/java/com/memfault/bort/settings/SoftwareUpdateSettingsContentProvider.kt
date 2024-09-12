@@ -22,14 +22,14 @@ class SoftwareUpdateSettingsContentProvider : ContentProvider() {
         projection: Array<out String>?,
         selection: String?,
         selectionArgs: Array<out String>?,
-        sortOrder: String?
+        sortOrder: String?,
     ): Cursor = createCursor(gatherConfig())
 
     private fun gatherConfig(): SoftwareUpdateSettings {
         // TODO: This does not run in the main thread, is runBlocking ok?
         return runBlocking {
-            val deviceInfo = runBlocking { entryPoint().deviceInfo().getDeviceInfo() }
-            val settings = entryPoint().settings()
+            val deviceInfo = entryPoint.deviceInfo().getDeviceInfo()
+            val settings = entryPoint.settings()
             SoftwareUpdateSettings(
                 deviceSerial = deviceInfo.deviceSerial,
                 currentVersion = deviceInfo.softwareVersion,
@@ -38,7 +38,7 @@ class SoftwareUpdateSettingsContentProvider : ContentProvider() {
                 updateCheckIntervalMs = settings.otaSettings.updateCheckInterval.inWholeMilliseconds,
                 baseUrl = settings.httpApiSettings.deviceBaseUrl,
                 projectApiKey = settings.httpApiSettings.projectKey,
-                downloadNetworkTypeConstraint = settings.otaSettings.downloadNetworkConstraint.networkType
+                downloadNetworkTypeConstraint = settings.otaSettings.downloadNetworkConstraint,
             )
         }
     }
@@ -49,7 +49,12 @@ class SoftwareUpdateSettingsContentProvider : ContentProvider() {
 
     override fun delete(uri: Uri, selection: String?, selectionArgs: Array<out String>?): Int = 0
 
-    override fun update(uri: Uri, values: ContentValues?, selection: String?, selectionArgs: Array<out String>?): Int =
+    override fun update(
+        uri: Uri,
+        values: ContentValues?,
+        selection: String?,
+        selectionArgs: Array<out String>?,
+    ): Int =
         0
 
     @EntryPoint
@@ -59,5 +64,10 @@ class SoftwareUpdateSettingsContentProvider : ContentProvider() {
         fun settings(): SettingsProvider
     }
 
-    fun entryPoint() = EntryPointAccessors.fromApplication(context!!, ContentProviderEntryPoint::class.java)
+    val entryPoint: ContentProviderEntryPoint by lazy {
+        EntryPointAccessors.fromApplication(
+            context!!,
+            ContentProviderEntryPoint::class.java,
+        )
+    }
 }

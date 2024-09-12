@@ -1,10 +1,11 @@
 package com.memfault.usagereporter
 
 import android.app.Application
-import android.content.SharedPreferences
 import android.os.Build
 import androidx.hilt.work.HiltWorkerFactory
 import androidx.work.Configuration
+import com.memfault.bort.android.SystemPropertiesProxy
+import com.memfault.bort.scopes.RootScopeBuilder
 import com.memfault.bort.shared.BuildConfigSdkVersionInfo
 import com.memfault.bort.shared.ClientServerMode
 import com.memfault.bort.shared.LogLevel
@@ -14,27 +15,26 @@ import com.memfault.bort.shared.disableAppComponents
 import com.memfault.bort.shared.isPrimaryUser
 import com.memfault.usagereporter.clientserver.B2BClientServer
 import com.memfault.usagereporter.clientserver.B2BClientServer.Companion.create
-import com.memfault.usagereporter.metrics.ReporterMetrics
-import com.memfault.usagereporter.receivers.ConnectivityReceiver
-import com.memfault.usagereporter.receivers.DropBoxEntryAddedForwardingReceiver
 import dagger.hilt.android.HiltAndroidApp
 import javax.inject.Inject
+import kotlin.system.exitProcess
 
 @HiltAndroidApp
 class UsageReporter : Application(), Configuration.Provider {
 
-    @Inject lateinit var connectivityReceiver: ConnectivityReceiver
-    @Inject lateinit var dropBoxEntryAddedForwardingReceiver: DropBoxEntryAddedForwardingReceiver
     @Inject lateinit var hiltWorkerFactory: HiltWorkerFactory
+
     @Inject lateinit var reporterSettingsPreferenceProvider: ReporterSettingsPreferenceProvider
-    @Inject lateinit var reporterMetrics: ReporterMetrics
-    @Inject lateinit var sharedPreferences: SharedPreferences
+
+    @Inject lateinit var logLevelPreferenceProvider: LogLevelPreferenceProvider
+
+    @Inject lateinit var rootScopeBuilder: RootScopeBuilder
 
     override fun onCreate() {
         super.onCreate()
 
         // Reads a previously-set log level
-        val minLogcatLevel = RealLogLevelPreferenceProvider(sharedPreferences).getLogLevel()
+        val minLogcatLevel = logLevelPreferenceProvider.getLogLevel()
 
         Logger.initTags(tag = "mflt-report", testTag = "mflt-report-test")
         Logger.initSettings(
@@ -44,13 +44,13 @@ class UsageReporter : Application(), Configuration.Provider {
                 minLogcatLevel = minLogcatLevel,
                 minStructuredLevel = LogLevel.INFO,
                 hrtEnabled = false,
-            )
+            ),
         )
 
         if (!isPrimaryUser()) {
             Logger.w("reporter disabled for secondary user")
             disableAppComponents(applicationContext)
-            System.exit(0)
+            exitProcess(0)
         }
 
         with(BuildConfigSdkVersionInfo) {
@@ -66,9 +66,11 @@ class UsageReporter : Application(), Configuration.Provider {
                 |  upstreamGitSha=$upstreamGitSha
                 |  upstreamVersionName=$upstreamVersionName
                 |  upstreamVersionCode=$upstreamVersionCode
-                """.trimMargin()
+                """.trimMargin(),
             )
         }
+
+        rootScopeBuilder.onCreate("reporter-root")
 
         val sysProp = SystemPropertiesProxy.get(ClientServerMode.SYSTEM_PROP)
         val clientServerMode = ClientServerMode.decode(sysProp)
@@ -78,14 +80,15 @@ class UsageReporter : Application(), Configuration.Provider {
         // unbinds.
         _b2bClientServer = create(clientServerMode, this, reporterSettingsPreferenceProvider)
 
-        connectivityReceiver.start()
-        dropBoxEntryAddedForwardingReceiver.start()
-        reporterMetrics.init()
-
         ReporterFileCleanupTask.schedule(this)
     }
 
-    override fun getWorkManagerConfiguration(): Configuration = Configuration.Builder()
+    override fun onTerminate() {
+        rootScopeBuilder.onTerminate()
+        super.onTerminate()
+    }
+
+    override val workManagerConfiguration: Configuration get() = Configuration.Builder()
         .setWorkerFactory(hiltWorkerFactory)
         .build()
 

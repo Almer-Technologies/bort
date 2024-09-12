@@ -1,5 +1,10 @@
 package com.memfault.bort.clientserver
 
+import assertk.Assert
+import assertk.assertThat
+import assertk.assertions.exists
+import assertk.assertions.isNull
+import assertk.assertions.support.expected
 import com.memfault.bort.BortJson
 import com.memfault.bort.LogcatCollectionId
 import com.memfault.bort.TemporaryFileFactory
@@ -14,20 +19,26 @@ import com.memfault.bort.settings.Resolution
 import com.memfault.bort.test.util.TestTemporaryFileFactory
 import com.memfault.bort.time.CombinedTime
 import com.memfault.bort.time.boxed
-import java.io.File
-import java.io.FileInputStream
-import java.time.Instant
-import java.util.UUID
-import java.util.zip.ZipInputStream
-import kotlin.time.Duration
+import org.junit.Rule
 import org.junit.Test
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.assertThrows
+import org.junit.rules.TemporaryFolder
+import java.io.File
+import java.io.FileInputStream
+import java.io.RandomAccessFile
+import java.time.Instant
+import java.util.UUID
+import java.util.zip.ZipInputStream
+import kotlin.time.Duration
 
 internal class MarFileWriterTest {
+    @get:Rule
+    val folder = TemporaryFolder()
+
     @Test
     fun createMarFile() {
         val manifest = heartbeat(timeMs = 123456789)
@@ -58,15 +69,70 @@ internal class MarFileWriterTest {
         val manifest2 = logcat(timeMs = 987654321)
         val marFile2 = createMarFile("mar2.mar", manifest2, FILE_CONTENT_2)
 
+        assertThat(marFile1).exists()
+        assertThat(marFile2).exists()
+
         val batchedMarFile = File.createTempFile("marfile", "batched.mar")
         writeBatchedMarFile(batchedMarFile, listOf(marFile1, marFile2), compressionLevel = 4)
 
-        assertFalse(marFile1.exists())
-        assertFalse(marFile2.exists())
-        ZipInputStream(FileInputStream(batchedMarFile)).use { zip ->
-            zip.assertNextEntry(batchedMarFile, manifest1, FILE_CONTENT)
-            zip.assertNextEntry(batchedMarFile, manifest2, FILE_CONTENT_2)
-            assertNull(zip.nextEntry)
+        assertThat(marFile1).doesNotExist()
+        assertThat(marFile2).doesNotExist()
+        FileInputStream(batchedMarFile).use { fileIn ->
+            ZipInputStream(fileIn).use { zipIn ->
+                zipIn.assertNextEntry(batchedMarFile, manifest1, FILE_CONTENT)
+                zipIn.assertNextEntry(batchedMarFile, manifest2, FILE_CONTENT_2)
+                assertThat(zipIn.nextEntry).isNull()
+            }
+        }
+    }
+
+    @Test
+    fun mergeMarFiles_oneEmpty() {
+        val manifest1 = heartbeat(timeMs = 123456789)
+        val marFile1 = createMarFile("mar1.mar", manifest1, FILE_CONTENT)
+
+        val marFile2 = folder.newFile("mar2.mar")
+
+        assertThat(marFile1).exists()
+        assertThat(marFile2).exists()
+
+        val batchedMarFile = File.createTempFile("marfile", "batched.mar")
+        writeBatchedMarFile(batchedMarFile, listOf(marFile1, marFile2), compressionLevel = 4)
+
+        assertThat(marFile1).doesNotExist()
+        assertThat(marFile2).doesNotExist()
+        FileInputStream(batchedMarFile).use { fileIn ->
+            ZipInputStream(fileIn).use { zipIn ->
+                zipIn.assertNextEntry(batchedMarFile, manifest1, FILE_CONTENT)
+                assertThat(zipIn.nextEntry).isNull()
+            }
+        }
+    }
+
+    @Test
+    fun mergeMarFiles_oneCorrupted() {
+        val manifest1 = heartbeat(timeMs = 123456789)
+        val marFile1 = createMarFile("mar1.mar", manifest1, FILE_CONTENT)
+
+        val marFile2 = createMarFile("mar1.mar", manifest1, FILE_CONTENT).also { marFile ->
+            RandomAccessFile(marFile, "rw").use { raf ->
+                raf.channel.truncate(10)
+            }
+        }
+
+        assertThat(marFile1).exists()
+        assertThat(marFile2).exists()
+
+        val batchedMarFile = File.createTempFile("marfile", "batched.mar")
+        writeBatchedMarFile(batchedMarFile, listOf(marFile1, marFile2), compressionLevel = 4)
+
+        assertThat(marFile1).doesNotExist()
+        assertThat(marFile2).doesNotExist()
+        FileInputStream(batchedMarFile).use { fileIn ->
+            ZipInputStream(fileIn).use { zipIn ->
+                zipIn.assertNextEntry(batchedMarFile, manifest1, FILE_CONTENT)
+                assertThat(zipIn.nextEntry).isNull()
+            }
         }
     }
 
@@ -76,7 +142,6 @@ internal class MarFileWriterTest {
             override val projectKey: String get() = "key"
             override val filesBaseUrl: String get() = TODO("Not used")
             override val deviceBaseUrl: String get() = TODO("Not used")
-            override val ingressBaseUrl: String get() = TODO("Not used")
             override val uploadNetworkConstraint: NetworkConstraint get() = TODO("Not used")
             override val uploadCompressionEnabled: Boolean get() = TODO("Not used")
             override val connectTimeout: Duration get() = TODO("Not used")
@@ -86,7 +151,6 @@ internal class MarFileWriterTest {
             override val zipCompressionLevel: Int = 4
             override val batchMarUploads: Boolean get() = TODO("Not used")
             override val batchedMarUploadPeriod: Duration get() = TODO("Not used")
-            override suspend fun useDeviceConfig(): Boolean = TODO("Not used")
             override val deviceConfigInterval: Duration get() = TODO("Not used")
             override val maxMarFileSizeBytes: Int get() = 3000 + MAR_SIZE_TOLERANCE_BYTES
             override val maxMarStorageBytes: Long get() = TODO("Not used")
@@ -99,17 +163,14 @@ internal class MarFileWriterTest {
         // file size: 1290
         val manifest1 = heartbeat(timeMs = 123456789)
         val marFile1 = createMarFile("mar1.mar", manifest1, FILE_CONTENT)
-        println("len 1: ${marFile1.name} ${marFile1.length()}")
 
         // file size: 1326
         val manifest2 = heartbeat(timeMs = 123456789)
         val marFile2 = createMarFile("mar2.mar", manifest2, FILE_CONTENT_2)
-        println("len 2: ${marFile2.name} ${marFile2.length()}")
 
         // file size: 1310
         val manifest3 = logcat(timeMs = 987654321)
         val marFile3 = createMarFile("mar3.mar", manifest3, FILE_CONTENT_3)
-        println("len 3: ${marFile3.name} ${marFile3.length()}")
 
         // Batch with a 3000 byte limit (configured in settings above).
         val batched = writer.batchMarFiles(listOf(marFile1, marFile2, marFile3))
@@ -158,7 +219,11 @@ internal class MarFileWriterTest {
         }
     }
 
-    private fun ZipInputStream.assertNextEntry(marFile: File, manifest: MarManifest, fileContent: String?) {
+    private fun ZipInputStream.assertNextEntry(
+        marFile: File,
+        manifest: MarManifest,
+        fileContent: String?,
+    ) {
         val dirEntry = nextEntry
         assertTrue(dirEntry.isDirectory)
         assertTrue(dirEntry.name.startsWith(marFile.name))
@@ -197,10 +262,14 @@ internal class MarFileWriterTest {
             elapsedRealtime = Duration.ZERO.boxed(),
             linuxBootId = "bootid",
             bootCount = 1,
-            timestamp = Instant.ofEpochMilli(timeMs)
+            timestamp = Instant.ofEpochMilli(timeMs),
         )
 
-        fun heartbeat(timeMs: Long, filename: String? = "batterystats", resolution: Resolution = Resolution.NORMAL) =
+        fun heartbeat(
+            timeMs: Long,
+            filename: String? = "batterystats",
+            resolution: Resolution = Resolution.NORMAL,
+        ) =
             MarManifest(
                 collectionTime = time(timeMs),
                 type = "android-heartbeat",
@@ -210,6 +279,8 @@ internal class MarFileWriterTest {
                     heartbeatIntervalMs = 2,
                     customMetrics = emptyMap(),
                     builtinMetrics = emptyMap(),
+                    reportType = "heartbeat",
+                    reportName = null,
                 ),
                 debuggingResolution = Resolution.NOT_APPLICABLE,
                 loggingResolution = Resolution.NOT_APPLICABLE,
@@ -248,4 +319,9 @@ internal class MarFileWriterTest {
             return file
         }
     }
+}
+
+private fun Assert<File>.doesNotExist() = given { actual ->
+    if (!actual.exists()) return
+    expected("to not exist")
 }

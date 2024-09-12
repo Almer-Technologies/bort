@@ -2,6 +2,7 @@ package com.memfault.bort
 
 import android.content.SharedPreferences
 import com.memfault.bort.settings.DataScrubbingSettings
+import com.memfault.bort.settings.DeviceInfoSettings
 import com.memfault.bort.settings.DropBoxSettings
 import com.memfault.bort.settings.DynamicSettingsProvider
 import com.memfault.bort.settings.HttpApiSettings
@@ -24,7 +25,9 @@ class TestOverrideSettings @Inject constructor(
     val useTestSettingOverrides = object : PreferenceKeyProvider<Boolean>(
         sharedPreferences = sharedPreferences,
         defaultValue = false,
-        preferenceKey = "test-use-setting-overrides"
+        preferenceKey = "test-use-setting-overrides",
+        // We kill the app right after setting this; use commit so that the write is not lost.
+        commit = true,
     ) {}
 }
 
@@ -38,8 +41,11 @@ class TestSettingsProvider @Inject constructor(
     fun override() = testOverrides.useTestSettingOverrides.getValue()
 
     override val httpApiSettings = object : HttpApiSettings by settings.httpApiSettings {
-        override val batchMarUploads: Boolean
-            get() = if (override()) false else settings.httpApiSettings.batchMarUploads
+        // Specifically for Bort Lite tests, where the apk is targeting prod:
+        override val deviceBaseUrl: String
+            get() = "http://localhost:8000"
+        override val filesBaseUrl: String
+            get() = "http://localhost:8000"
     }
 
     // TODO: review this, the backend will override settings through dynamic settings update
@@ -60,20 +66,31 @@ class TestSettingsProvider @Inject constructor(
                     LogcatFilterSpec("*", LogcatPriority.WARN),
                     LogcatFilterSpec("bort", LogcatPriority.VERBOSE),
                     LogcatFilterSpec("bort-test", LogcatPriority.VERBOSE),
+                    // e2e-helper-test is the tag used to generate random bytes
+                    // for the continuous logcat bytes-threshold test
+                    LogcatFilterSpec("e2e-helper-test", LogcatPriority.VERBOSE),
                 )
-            } else settings.logcatSettings.filterSpecs
-
-        override val continuousLogDumpThresholdBytes: Int
-            get() = if (override()) 16 * 1024
-            else settings.logcatSettings.continuousLogDumpThresholdBytes
+            } else {
+                settings.logcatSettings.filterSpecs
+            }
     }
 
     // Include data scrubbing rules when testing
     override val dataScrubbingSettings = object : DataScrubbingSettings by settings.dataScrubbingSettings {
         override val rules: List<DataScrubbingRule>
-            get() = if (override()) listOf(
-                EmailScrubbingRule,
-                CredentialScrubbingRule,
-            ) else settings.dataScrubbingSettings.rules
+            get() = if (override()) {
+                listOf(
+                    EmailScrubbingRule,
+                    CredentialScrubbingRule,
+                )
+            } else {
+                settings.dataScrubbingSettings.rules
+            }
+    }
+
+    override val deviceInfoSettings = object : DeviceInfoSettings by settings.deviceInfoSettings {
+        // ro.product.board doesn't exist on android 8 base image (we added it on bort image)
+        override val androidHardwareVersionKey: String
+            get() = if (override()) "ro.product.cpu.abi" else settings.deviceInfoSettings.androidHardwareVersionKey
     }
 }

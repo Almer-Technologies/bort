@@ -1,11 +1,16 @@
 package com.memfault.bort
 
 import android.app.Application
+import androidx.hilt.work.HiltWorkerFactory
 import androidx.work.Configuration
+import com.memfault.bort.dropbox.DropBoxTagEnabler
 import com.memfault.bort.metrics.BORT_CRASH
 import com.memfault.bort.metrics.BORT_STARTED
 import com.memfault.bort.metrics.BuiltinMetricsStore
+import com.memfault.bort.receivers.DropBoxEntryAddedReceiver
+import com.memfault.bort.scopes.RootScopeBuilder
 import com.memfault.bort.settings.BortEnabledProvider
+import com.memfault.bort.settings.BortWorkManagerConfiguration
 import com.memfault.bort.settings.SettingsProvider
 import com.memfault.bort.settings.asLoggerSettings
 import com.memfault.bort.shared.Logger
@@ -13,18 +18,35 @@ import com.memfault.bort.shared.disableAppComponents
 import com.memfault.bort.shared.isPrimaryUser
 import com.memfault.bort.time.UptimeTracker
 import dagger.hilt.android.HiltAndroidApp
+import kotlinx.coroutines.runBlocking
 import javax.inject.Inject
-import javax.inject.Provider
+import kotlin.system.exitProcess
 
 @HiltAndroidApp
 open class Bort : Application(), Configuration.Provider {
     @Inject lateinit var metrics: BuiltinMetricsStore
+
     @Inject lateinit var bortEnabledProvider: BortEnabledProvider
+
     @Inject lateinit var uptimeTracker: UptimeTracker
+
     @Inject lateinit var settingsProvider: SettingsProvider
-    @Inject lateinit var workerFactory: Provider<BortWorkerFactory>
+
+    @Inject lateinit var hiltWorkerFactory: HiltWorkerFactory
+
     @Inject lateinit var installationIdProvider: InstallationIdProvider
+
     @Inject lateinit var appUpgrade: AppUpgrade
+
+    @Inject lateinit var bortWorkManagerConfig: BortWorkManagerConfiguration
+
+    @Inject lateinit var rootScopeBuilder: RootScopeBuilder
+
+    @Inject lateinit var dropBoxEntryAddedReceiver: DropBoxEntryAddedReceiver
+
+    @Inject lateinit var projectKeySysprop: ProjectKeySysprop
+
+    @Inject lateinit var dropBoxTagEnabler: DropBoxTagEnabler
 
     override fun onCreate() {
         super.onCreate()
@@ -34,7 +56,7 @@ open class Bort : Application(), Configuration.Provider {
         if (!isPrimaryUser()) {
             Logger.w("bort disabled for secondary user")
             disableAppComponents(applicationContext)
-            System.exit(0)
+            exitProcess(0)
         }
 
         val defaultExceptionHandler = Thread.getDefaultUncaughtExceptionHandler()
@@ -48,15 +70,33 @@ open class Bort : Application(), Configuration.Provider {
         logDebugInfo(bortEnabledProvider, settingsProvider)
         uptimeTracker.trackUptimeOnStart()
 
-        if (!bortEnabledProvider.isEnabled()) {
-            Logger.test("Bort not enabled, not running app")
-            return
+        // We want this to happen even if Bort is disabled.
+        runBlocking {
+            projectKeySysprop.loadFromSysprop()
         }
 
+        rootScopeBuilder.onCreate("bort-root")
+
         appUpgrade.handleUpgrade(this)
+        dropBoxTagEnabler.enableTagsIfRequired()
+        dropBoxEntryAddedReceiver.initialize()
+
+        if (bortEnabledProvider.isEnabled()) {
+            Logger.test("Bort app running with Bort enabled")
+        } else {
+            Logger.test("Bort app running with Bort not enabled")
+        }
     }
 
-    private fun logDebugInfo(bortEnabledProvider: BortEnabledProvider, settingsProvider: SettingsProvider) {
+    override fun onTerminate() {
+        rootScopeBuilder.onTerminate()
+        super.onTerminate()
+    }
+
+    private fun logDebugInfo(
+        bortEnabledProvider: BortEnabledProvider,
+        settingsProvider: SettingsProvider,
+    ) {
         Logger.logEventBortSdkEnabled(bortEnabledProvider.isEnabled())
 
         with(settingsProvider) {
@@ -68,7 +108,7 @@ open class Bort : Application(), Configuration.Provider {
                 "appVersionName=${sdkVersionInfo.appVersionName}",
                 "appVersionCode=${sdkVersionInfo.appVersionCode}",
                 "currentGitSha=${sdkVersionInfo.currentGitSha}",
-                "upstreamGitSha${sdkVersionInfo.upstreamGitSha}",
+                "upstreamGitSha=${sdkVersionInfo.upstreamGitSha}",
                 "upstreamVersionName=${sdkVersionInfo.upstreamVersionName}",
                 "upstreamVersionCode=${sdkVersionInfo.upstreamVersionCode}",
                 "bugreport.enabled=${bugReportSettings.dataSourceEnabled}",
@@ -79,16 +119,14 @@ open class Bort : Application(), Configuration.Provider {
                 "bort.oncreate",
                 mapOf(
                     "appVersionName" to sdkVersionInfo.appVersionName,
-                )
+                ),
             )
         }
     }
 
-    override fun getWorkManagerConfiguration(): Configuration =
+    override val workManagerConfiguration: Configuration get() =
         Configuration.Builder()
-            .setWorkerFactory(
-                // Create a WorkerFactory provider that provides a fresh WorkerFactory. This
-                // ensures the WorkerFactory is always using fresh app components.
-                workerFactory.get()
-            ).build()
+            .setWorkerFactory(hiltWorkerFactory)
+            .setMinimumLoggingLevel(bortWorkManagerConfig.logLevel)
+            .build()
 }

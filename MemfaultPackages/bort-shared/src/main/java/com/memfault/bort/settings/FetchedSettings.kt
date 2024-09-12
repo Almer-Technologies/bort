@@ -6,16 +6,19 @@ import com.memfault.bort.shared.LogcatFilterSpec
 import com.memfault.bort.time.BoxedDuration
 import com.memfault.bort.time.DurationAsMillisecondsLong
 import com.memfault.bort.time.boxed
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
 import kotlin.time.Duration.Companion.ZERO
 import kotlin.time.Duration.Companion.days
 import kotlin.time.Duration.Companion.hours
 import kotlin.time.Duration.Companion.minutes
-import kotlinx.serialization.SerialName
-import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.Json
 
 @Serializable
 data class FetchedSettings(
+    @SerialName("battery_stats.collect_summary")
+    val batteryStatsCollectSummary: Boolean = true,
+
     @SerialName("battery_stats.command_timeout_ms")
     @Serializable(with = DurationAsMillisecondsLong::class)
     val batteryStatsCommandTimeout: BoxedDuration,
@@ -24,7 +27,10 @@ data class FetchedSettings(
     val batteryStatsDataSourceEnabled: Boolean,
 
     @SerialName("battery_stats.use_hrt")
-    val batteryStatsUseHrt: Boolean = false,
+    val batteryStatsUseHrt: Boolean = true,
+
+    @SerialName("battery_stats.component_metrics")
+    val batteryStatsComponentMetrics: List<String> = listOf(),
 
     @SerialName("bort.min_log_level")
     val bortMinLogcatLevel: Int,
@@ -72,6 +78,9 @@ data class FetchedSettings(
     @SerialName("bug_report.periodic_rate_limiting_percent")
     val bugReportPeriodicRateLimitingPercentOfPeriod: Int = 50,
 
+    @SerialName("chronicler.mar_enabled")
+    val chroniclerMarEnabled: Boolean = true,
+
     @SerialName("data_scrubbing.rules")
     val dataScrubbingRules: List<DataScrubbingRule>,
 
@@ -87,8 +96,14 @@ data class FetchedSettings(
     @SerialName("device_info.android_hardware_version_key")
     val deviceInfoAndroidHardwareVersionKey: String,
 
+    @SerialName("disk_wear.data_source_enabled")
+    val diskWearDataSourceEnabled: Boolean = true,
+
     @SerialName("drop_box.excluded_tags")
     val dropBoxExcludedTags: Set<String>,
+
+    @SerialName("drop_box.force_enable_wtf_tags")
+    val dropBoxForceEnableWtfTags: Boolean = true,
 
     @SerialName("drop_box.anrs.rate_limiting_settings")
     val dropBoxAnrsRateLimitingSettings: RateLimitingSettings,
@@ -98,6 +113,13 @@ data class FetchedSettings(
 
     @SerialName("drop_box.scrub_tombstones")
     val dropBoxScrubTombstones: Boolean = false,
+
+    @SerialName("drop_box.process_immediately")
+    val dropBoxProcessImmediately: Boolean = true,
+
+    @SerialName("drop_box.polling_interval_ms")
+    @Serializable(with = DurationAsMillisecondsLong::class)
+    val dropBoxPollingInterval: BoxedDuration = 15.minutes.boxed(),
 
     @SerialName("drop_box.java_exceptions.rate_limiting_settings")
     val dropBoxJavaExceptionsRateLimitingSettings: RateLimitingSettings,
@@ -144,9 +166,6 @@ data class FetchedSettings(
 
     @SerialName("http_api.files_base_url")
     val httpApiFilesBaseUrl: String,
-
-    @SerialName("http_api.ingress_base_url")
-    val httpApiIngressBaseUrl: String,
 
     @SerialName("http_api.upload_compression_enabled")
     val httpApiUploadCompressionEnabled: Boolean,
@@ -244,21 +263,42 @@ data class FetchedSettings(
     @Serializable(with = DurationAsMillisecondsLong::class)
     val logcatContinuousDumpWrappingTimeout: BoxedDuration = 15.minutes.boxed(),
 
+    @SerialName("metrics.cache_packages")
+    val metricsCachePackages: Boolean = true,
+
     @SerialName("metrics.collection_interval_ms")
     @Serializable(with = DurationAsMillisecondsLong::class)
     val metricsCollectionInterval: BoxedDuration,
 
+    @SerialName("metrics.operational_crashes_exclusions")
+    val metricsOperationalCrashesExclusions: List<String> = listOf(),
+
     @SerialName("metrics.data_source_enabled")
     val metricsDataSourceEnabled: Boolean,
 
+    @SerialName("metrics.properties_use_service")
+    val metricsPropertiesUseService: Boolean = true,
+
     @SerialName("metrics.system_properties")
-    val metricsSystemProperties: List<String> = listOf("ro.build.type"),
+    val metricsSystemProperties: List<String> = listOf("ro.build.type", "persist.sys.timezone"),
 
     @SerialName("metrics.app_versions")
     val metricsAppVersions: List<String> = listOf(),
 
     @SerialName("metrics.max_num_app_versions")
     val metricsMaxNumAppVersions: Int = 50,
+
+    @SerialName("network.data_source_enabled")
+    val networkDataSourceEnabled: Boolean = true,
+
+    @SerialName("network.collection_receive_threshold_kb")
+    val networkCollectionReceiveThresholdKb: Long = 1_000L,
+
+    @SerialName("network.collection_transmit_threshold_kb")
+    val networkCollectionTransmitThresholdKb: Long = 1_000L,
+
+    @SerialName("metrics.record_imei")
+    val metricsRecordImei: Boolean = false,
 
     @SerialName("metrics.reporter_collection_interval_ms")
     @Serializable(with = DurationAsMillisecondsLong::class)
@@ -267,6 +307,9 @@ data class FetchedSettings(
     @SerialName("ota.update_check_interval_ms")
     @Serializable(with = DurationAsMillisecondsLong::class)
     val otaUpdateCheckInterval: BoxedDuration = 12.hours.boxed(),
+
+    @SerialName("ota.download_network_constraint")
+    val otaDownloadNetworkConstraint: String = "UNSET",
 
     @SerialName("ota.download_network_constraint_allow_metered_connection")
     val otaDownloadNetworkConstraintAllowMeteredConnection: Boolean = false,
@@ -280,6 +323,22 @@ data class FetchedSettings(
 
     @SerialName("reboot_events.rate_limiting_settings")
     val rebootEventsRateLimitingSettings: RateLimitingSettings,
+
+    @SerialName("significant_apps.collection_enabled")
+    val significantAppsCollectionEnabled: Boolean = false,
+
+    @SerialName("significant_apps.packages")
+    val significantAppsPackages: List<String> = listOf(),
+
+    @SerialName("selinux_violation_events.data_source_enabled")
+    val selinuxViolationEventsDataSourceEnabled: Boolean = false,
+
+    @SerialName("selinux_violation_events.rate_limiting_settings")
+    val selinuxViolationEventsRateLimitingSettings: RateLimitingSettings = RateLimitingSettings(
+        defaultCapacity = 2,
+        defaultPeriod = 24.hours.boxed(),
+        maxBuckets = 15,
+    ),
 
     @SerialName("sampling.logging_active")
     val fleetSamplingLoggingActive: Boolean = false,
@@ -331,6 +390,19 @@ data class FetchedSettings(
     @SerialName("metric_report.high_res_telemetry")
     val highResTelemetryEnabled: Boolean = true,
 
+    @SerialName("metric_report.daily_heartbeat")
+    val dailyHeartbeatEnabled: Boolean = false,
+
+    @SerialName("metric_report.sessions_rate_limiting_settings")
+    val metricReportSessionsRateLimitingSettings: RateLimitingSettings = RateLimitingSettings(
+        defaultCapacity = 125,
+        defaultPeriod = 24.hours.boxed(),
+        maxBuckets = 1,
+    ),
+
+    @SerialName("storage.apps_size_data_source_enabled")
+    val storageAppsSizeDataSourceEnabled: Boolean = true,
+
     @SerialName("storage.max_client_server_file_transfer_storage_bytes")
     val storageMaxClientServerFileTransferStorageBytes: Long = 50_000_000,
 
@@ -354,7 +426,7 @@ data class FetchedSettings(
 ) {
     @Serializable
     data class FetchedSettingsContainer(
-        val data: FetchedSettings
+        val data: FetchedSettings,
     )
 
     companion object {

@@ -4,9 +4,10 @@ import android.os.Environment
 import com.memfault.bort.reporting.NumericAgg
 import com.memfault.bort.reporting.Reporting
 import com.memfault.bort.shared.Logger
-import javax.inject.Inject
+import com.memfault.bort.time.CombinedTime
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import javax.inject.Inject
 
 /**
  * Collects internal storage usage stats, and records them as metrics.
@@ -22,7 +23,7 @@ class StorageStatsCollector
     private val percentageUsedMetric =
         Reporting.report().distribution("storage.data.percentage_used", listOf(NumericAgg.LATEST_VALUE))
 
-    suspend fun collectStorageStats() = withContext(Dispatchers.IO) {
+    suspend fun collectStorageStats(collectionTime: CombinedTime) = withContext(Dispatchers.IO) {
         Logger.v("collectStorageStats")
         val freeBytes = Environment.getDataDirectory().freeSpace
         val totalBytes = Environment.getDataDirectory().totalSpace
@@ -30,11 +31,12 @@ class StorageStatsCollector
         val percentageUsed = usedBytes.toDouble() / totalBytes.toDouble()
         Logger.v(
             "collectStorageStats: freeBytes=$freeBytes / totalBytes=$totalBytes / " +
-                "usedBytes=$usedBytes / percentageUsed=$percentageUsed"
+                "usedBytes=$usedBytes / percentageUsed=$percentageUsed",
         )
-        freeBytesMetric.record(freeBytes)
-        totalBytesMetric.record(totalBytes)
-        usedBytesMetric.record(usedBytes)
-        percentageUsedMetric.record(percentageUsed)
+        val now = collectionTime.timestamp.toEpochMilli()
+        freeBytesMetric.record(freeBytes, timestamp = now)
+        totalBytesMetric.record(totalBytes, timestamp = now)
+        usedBytesMetric.record(usedBytes, timestamp = now)
+        percentageUsedMetric.record(percentageUsed, timestamp = now)
     }
 }

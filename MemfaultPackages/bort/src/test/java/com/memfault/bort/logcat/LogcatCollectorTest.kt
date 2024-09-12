@@ -20,10 +20,18 @@ import com.memfault.bort.time.AbsoluteTime
 import com.memfault.bort.time.BaseAbsoluteTime
 import com.memfault.bort.time.boxed
 import io.mockk.coEvery
+import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.slot
 import io.mockk.verify
+import kotlinx.coroutines.test.runTest
+import org.junit.jupiter.api.AfterEach
+import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertNotEquals
+import org.junit.jupiter.api.Assertions.assertNotNull
+import org.junit.jupiter.api.BeforeEach
+import org.junit.jupiter.api.Test
 import java.io.File
 import java.io.OutputStream
 import java.time.Instant
@@ -31,13 +39,6 @@ import java.time.ZoneOffset
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.ZERO
 import kotlin.time.Duration.Companion.minutes
-import kotlinx.coroutines.runBlocking
-import org.junit.jupiter.api.AfterEach
-import org.junit.jupiter.api.Assertions.assertEquals
-import org.junit.jupiter.api.Assertions.assertNotEquals
-import org.junit.jupiter.api.Assertions.assertNotNull
-import org.junit.jupiter.api.BeforeEach
-import org.junit.jupiter.api.Test
 
 data class FakeNextLogcatStartTimeProvider(
     override var nextStart: BaseAbsoluteTime,
@@ -53,8 +54,10 @@ class LogcatCollectorTest {
     lateinit var mockPackageNameAllowList: PackageNameAllowList
     lateinit var mockPackageManagerClient: PackageManagerClient
     lateinit var kernelOopsDetector: LogcatLineProcessor
+    lateinit var selinuxViolationLogcatDetector: SelinuxViolationLogcatDetector
     lateinit var logcatSettings: LogcatSettings
     lateinit var logcatRunner: LogcatRunner
+    lateinit var storagedDiskWearLogcatDetector: StoragedDiskWearLogcatDetector
     var tempFile: File? = null
 
     @BeforeEach
@@ -66,7 +69,8 @@ class LogcatCollectorTest {
                 runLogcat(
                     capture(outputStreamSlot),
                     capture(commandSlot),
-                    any()
+                    any(),
+                    any(),
                 )
             } answers {
                 logcatOutput.let { output ->
@@ -81,12 +85,12 @@ class LogcatCollectorTest {
         cidProvider = FakeNextLogcatCidProvider.incrementing()
 
         mockPackageManagerClient = mockk {
-            coEvery { getPackageManagerReport(null) } returns PackageManagerReport(
+            coEvery { getPackageManagerReport() } returns PackageManagerReport(
                 listOf(
                     Package(id = "android", userId = 1000),
                     Package(id = "com.memfault.bort", userId = 9008),
                     Package(id = "org.smartcompany.smartcupholder", userId = 9020),
-                )
+                ),
             )
         }
 
@@ -97,6 +101,7 @@ class LogcatCollectorTest {
         }
 
         kernelOopsDetector = mockk(relaxed = true)
+        selinuxViolationLogcatDetector = mockk(relaxed = true)
         logcatSettings = object : LogcatSettings {
             override val dataSourceEnabled = true
             override val collectionInterval = ZERO
@@ -111,6 +116,8 @@ class LogcatCollectorTest {
             override val continuousLogDumpWrappingTimeout: Duration = 30.minutes
         }
 
+        storagedDiskWearLogcatDetector = StoragedDiskWearLogcatDetector()
+
         collector = LogcatCollector(
             temporaryFileFactory = TestTemporaryFileFactory,
             nextLogcatStartTimeProvider = startTimeProvider,
@@ -120,8 +127,10 @@ class LogcatCollectorTest {
             packageNameAllowList = mockPackageNameAllowList,
             packageManagerClient = mockPackageManagerClient,
             kernelOopsDetector = { kernelOopsDetector },
+            selinuxViolationLogcatDetector = selinuxViolationLogcatDetector,
             logcatSettings = logcatSettings,
             logcatRunner = logcatRunner,
+            storagedDiskWearLogcatDetector = storagedDiskWearLogcatDetector,
         )
     }
 
@@ -130,13 +139,11 @@ class LogcatCollectorTest {
         tempFile?.delete()
     }
 
-    private fun collect() =
-        runBlocking {
-            collector.collect()
-        }.also { result -> result?.let { tempFile = result.file } }
+    private suspend fun collect() = collector.collect()
+        .also { result -> tempFile = result.file }
 
     @Test
-    fun happyPath() {
+    fun happyPath() = runTest {
         val initialCid = cidProvider.cid
         val nextStartInstant = Instant.ofEpochSecond(1234, 56789)
         startTimeProvider.nextStart = AbsoluteTime(nextStartInstant)
@@ -148,8 +155,9 @@ class LogcatCollectorTest {
             |2021-01-18 12:34:02.000000000 +0000  9013  9020 W SmartCupHolder: won't be scrubbed (< first app aid)
             |--------- switch to main
             |2021-01-18 12:34:02.000000000 +0000  9008  9008 W PackageManager: Installing app
-            |""".trimMargin()
-        val result = collect()!!
+            |
+        """.trimMargin()
+        val result = collect()
         assertEquals(
             """2021-01-18 12:34:02.000000000 +0000  9008  9008 I ServiceManager: Waiting...
             |2021-01-18 12:34:02.000000000 +0000  9008  9008 I PII: u: {{USERNAME}} p: {{PASSWORD}}
@@ -159,8 +167,9 @@ class LogcatCollectorTest {
             |2021-01-18 12:34:02.000000000 +0000  9013  9020 W SmartCupHolder: won't be scrubbed (< first app aid)
             |--------- switch to main
             |2021-01-18 12:34:02.000000000 +0000  9008  9008 W PackageManager: Installing app
-            |""".trimMargin(),
-            result.file.readText()
+            |
+            """.trimMargin(),
+            result.file.readText(),
         )
         assertEquals(nextStartInstant, result.command.recentSince?.toInstant(ZoneOffset.UTC))
         assertEquals(initialCid, result.cid)
@@ -173,11 +182,11 @@ class LogcatCollectorTest {
             startTimeProvider.nextStart,
         )
         verify { kernelOopsDetector.process(any()) }
-        verify(exactly = 1) { kernelOopsDetector.finish(any()) }
+        coVerify(exactly = 1) { kernelOopsDetector.finish(any()) }
     }
 
     @Test
-    fun whenLastLogLineFailedToParsefallbackToNowAsNextStart() {
+    fun whenLastLogLineFailedToParsefallbackToNowAsNextStart() = runTest {
         logcatOutput = "foo bar"
         val result = collect()
         assertEquals(
@@ -186,16 +195,17 @@ class LogcatCollectorTest {
         )
         assertNotNull(result)
         verify { kernelOopsDetector.process(any()) }
-        verify(exactly = 1) { kernelOopsDetector.finish(any()) }
+        coVerify(exactly = 1) { kernelOopsDetector.finish(any()) }
     }
 
     @Test
-    fun useLastDateIflastLogLineIsSeparator() {
+    fun useLastDateIflastLogLineIsSeparator() = runTest {
         val nextStartInstant = Instant.ofEpochSecond(1234, 56789)
         startTimeProvider.nextStart = AbsoluteTime(nextStartInstant)
         logcatOutput = """2021-01-18 12:34:02.000000000 +0000  9008  9008 I ServiceManager: Waiting...
             |--------- switch to main
-            |""".trimMargin()
+            |
+        """.trimMargin()
         val result = collect()
         assertNotEquals(FAKE_NOW, startTimeProvider.nextStart)
         assertEquals(
@@ -204,25 +214,25 @@ class LogcatCollectorTest {
         )
         assertNotNull(result)
         verify { kernelOopsDetector.process(any()) }
-        verify(exactly = 1) { kernelOopsDetector.finish(any()) }
+        coVerify(exactly = 1) { kernelOopsDetector.finish(any()) }
     }
 
     @Test
-    fun emptyLogcatOutput() {
+    fun emptyLogcatOutput() = runTest {
         logcatOutput = ""
         val initialCid = cidProvider.cid
         val result = collect()
         // Upload even when empty. If it is not uploaded, it causes confusion when there is no log file
         // around an event of interest to be found ("what happened, is it a Bort bug?").
         assertNotNull(result)
-        assertEquals("", result!!.file.readText())
+        assertEquals("", result.file.readText())
         // CID should have been rotated:
         assertEquals(initialCid, result.cid)
         assertNotEquals(initialCid, cidProvider.cid)
     }
 
     @Test
-    fun logPrioritySerializerDeserializer() {
+    fun logPrioritySerializerDeserializer() = runTest {
         LogcatPriority.values()
             .map {
                 Pair(it.cliValue, """"${it.cliValue}"""")
@@ -231,8 +241,8 @@ class LogcatCollectorTest {
                     LogcatPriority.getByCliValue(literal),
                     BortJson.decodeFromString(
                         LogcatPrioritySerializer,
-                        json
-                    )
+                        json,
+                    ),
                 )
                 assertEquals(
                     BortJson.encodeToString(LogcatPrioritySerializer, LogcatPriority.getByCliValue(literal)!!),
@@ -250,7 +260,7 @@ class LogcatCollectorTest {
                 Package(id = "net.smartthings.smartcarpet", userId = 1002),
                 Package(id = "net.smartthings.smartshoe", userId = 1004),
                 Package(id = "android", userId = 2000),
-            )
+            ),
         )
 
         val allowList = PackageNameAllowList { it?.contains("smart") ?: false }

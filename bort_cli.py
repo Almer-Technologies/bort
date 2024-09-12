@@ -14,7 +14,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from typing import Any, Iterable, List, Optional, Tuple
+from string import Template
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 LOG_FILE = "validate-sdk-integration.log"
 
@@ -25,7 +26,7 @@ PLACEHOLDER_BORT_AOSP_PATCH_VERSION = "manually_patched"
 PLACEHOLDER_BORT_APP_ID = "vnd.myandroid.bortappid"
 PLACEHOLDER_BORT_OTA_APP_ID = "vnd.myandroid.bort.otaappid"
 PLACEHOLDER_FEATURE_NAME = "vnd.myandroid.bortfeaturename"
-RELEASES = range(8, 13 + 1)
+RELEASES = range(8, 14 + 1)
 SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
 GRADLE_PROPERTIES = os.path.join(SCRIPT_DIR, "MemfaultPackages", "gradle.properties")
 PYTHON_MIN_VERSION = (3, 6, 0)
@@ -39,9 +40,9 @@ MEMFAULT_DUMPSTER_PATH = "/system/bin/MemfaultDumpster"
 MEMFAULT_DUMPSTER_DATA_PATH = "/data/system/MemfaultDumpster/"
 MEMFAULT_DUMPSTER_RC_PATH = "/etc/init/memfault_dumpster.rc"
 MEMFAULT_STRUCTURED_RC_PATH = "/etc/init/memfault_structured_logd.rc"
-MEMFAULT_STRUCTURED_DATA_PATH = "/data/system/MemfaultStructuredLogd/"
-MEMFAULT_STRUCTURED_EXEC_PATH = "/system/bin/MemfaultStructuredLogd"
+MEMFAULT_STRUCTURED_APPLICATION_ID = "com.memfault.structuredlogd"
 BORT_APK_PATH = r"package:/system/priv-app/MemfaultBort/MemfaultBort.apk"
+BORT_OTA_APK_PATH = r"package:/system/priv-app/MemfaultBortOta/MemfaultBortOta.apk"
 VENDOR_CIL_PATH = "/vendor/etc/selinux/vendor_sepolicy.cil"
 LOG_ENTRY_SEPARATOR = "============================================================"
 
@@ -61,6 +62,16 @@ def readable_dir_type(path):
         return path
 
     raise argparse.ArgumentTypeError("Couldn't find/access directory %r" % path)
+
+
+def executable_bin_type(path):
+    """
+    Arg parser for binary paths
+    """
+    if os.path.isfile(path) and os.access(path, os.X_OK):
+        return path
+
+    raise argparse.ArgumentTypeError("Couldn't find/access binary at %s" % path)
 
 
 def shell_command_type(arg):
@@ -116,10 +127,6 @@ class Command(abc.ABC):
     """
 
     @abc.abstractmethod
-    def register(self, create_parser):
-        pass
-
-    @abc.abstractmethod
     def run(self):
         pass
 
@@ -139,7 +146,9 @@ class PatchAOSPCommand(Command):
         self._check_patch_command = check_patch_command or self._default_check_patch_command()
         self._apply_patch_command = apply_patch_command or self._default_apply_patch_command()
         self._force = force
+
         self._patches_dir = os.path.join(patch_dir, f"android-{android_release}")
+
         self._exclude_dirs = exclude or []
         self._errors = []
         self._warnings = []
@@ -241,11 +250,10 @@ class PatchAOSPCommand(Command):
                 cwd=os.path.join(self._aosp_root, repo_subdir),
                 input=content.encode(DEFAULT_ENCODING),
             )
-            logging.info("Skipping patch %r: already applied!", patch_relpath)
-            return True
-
         except (subprocess.CalledProcessError, FileNotFoundError):
             return False
+        logging.info("Skipping patch %r: already applied!", patch_relpath)
+        return True
 
     def _apply_patch(self, repo_subdir, patch_relpath, content):
         apply_cmd = self._apply_patch_command
@@ -340,10 +348,10 @@ def _get_shell_cmd_output_and_errors(
         output = subprocess.check_output(
             _shell_command(), stderr=sys.stderr, encoding="utf-8", universal_newlines=True
         )
-        result: str = output[:-1]  # Trim trailing newline
-        return result, []
     except subprocess.CalledProcessError as error:
         return None, [str(error)]
+    result: str = output[:-1]  # Trim trailing newline
+    return result, []
 
 
 def _create_adb_command(cmd: Tuple, device: Optional[str] = None) -> Tuple:
@@ -355,6 +363,22 @@ def _get_adb_shell_cmd_output_and_errors(
 ) -> Tuple[Optional[str], List[str]]:
     return _get_shell_cmd_output_and_errors(
         description=description, cmd=_create_adb_command(("shell", *cmd), device=device)
+    )
+
+
+def _query_provider(uri: str, device: Optional[str] = None) -> Tuple[Optional[str], List[str]]:
+    return _get_shell_cmd_output_and_errors(
+        description="contentprovider",
+        cmd=_create_adb_command(("shell", "content", "query", "--uri", uri), device=device),
+    )
+
+
+def _query_jobscheduler(
+    package: str, device: Optional[str] = None
+) -> Tuple[Optional[str], List[str]]:
+    return _get_shell_cmd_output_and_errors(
+        description="jobscheduler",
+        cmd=_create_adb_command(("shell", "dumpsys", "jobscheduler", package), device=device),
     )
 
 
@@ -420,7 +444,7 @@ class _AlwaysMatcher(_Matcher):
         return True, "OK"
 
 
-def _format_error(description: str, *details: Any) -> str:
+def _format_error(description: str, *details: Any) -> str:  # noqa: ANN401
     return (2 * os.linesep).join(map(str, ("", description, *details)))
 
 
@@ -511,6 +535,13 @@ def _check_bort_app_id(bort_app_id: str) -> None:
     if bort_app_id == PLACEHOLDER_BORT_APP_ID:
         sys.exit(
             f"Invalid application ID '{bort_app_id}'. Please configure BORT_APPLICATION_ID in bort.properties."
+        )
+
+
+def _check_bort_ota_app_id(bort_ota_app_id: str) -> None:
+    if bort_ota_app_id == PLACEHOLDER_BORT_OTA_APP_ID:
+        sys.exit(
+            f"Invalid application ID '{bort_ota_app_id}'. Please configure BORT_OTA_APPLICATION_ID in bort.properties."
         )
 
 
@@ -685,9 +716,9 @@ class OtaCheckForUpdates(Command):
             "broadcast",
             "--receiver-include-background",
             "-a",
-            "com.memfault.intent.action.OTA_CHECK_FOR_UPDATES",
+            "com.memfault.intent.action.OTA_CHECK_FOR_UPDATES_SHELL",
             "-n",
-            f"{self._bort_ota_app_id}/com.memfault.bort.ota.lib.CheckForUpdatesReceiver",
+            f"{self._bort_ota_app_id}/com.memfault.bort.ota.lib.ShellCheckForUpdatesReceiver",
         )
         _send_broadcast(
             self._bort_ota_app_id, "Checking for OTA updates", broadcast_cmd, self._device
@@ -737,22 +768,33 @@ class DevMode(Command):
 
 
 class ValidateConnectedDevice(Command):
-    def __init__(self, bort_app_id, device=None, vendor_feature_name=None):
+    def __init__(
+        self,
+        bort_app_id,
+        bort_ota_app_id=None,
+        device=None,
+        vendor_feature_name=None,
+        ignore_enabled=False,
+    ):
         self._bort_app_id = bort_app_id
+        self._bort_ota_app_id = bort_ota_app_id
         self._device = device
         self._vendor_feature_name = vendor_feature_name or bort_app_id
         self._errors = []
+        self._ignore_enabled = ignore_enabled
 
     @classmethod
     def register(cls, create_parser):
         parser = create_parser(cls, "validate-sdk-integration")
         parser.add_argument("--bort-app-id", type=android_application_id_type, required=True)
+        parser.add_argument("--bort-ota-app-id", type=android_application_id_type, required=False)
         parser.add_argument(
             "--device", type=str, help="Optional device ID passed to ADB's `-s` flag"
         )
         parser.add_argument(
             "--vendor-feature-name", type=str, help="Defaults to the provided Application ID"
         )
+        parser.add_argument("--ignore-enabled", action="store_true")
 
     def _getprop(self, key: str) -> Optional[str]:
         output, errors = _get_adb_shell_cmd_output_and_errors(
@@ -786,11 +828,9 @@ class ValidateConnectedDevice(Command):
                         r"allow .*_app_.* memfault_dumpster_service \(service_manager \(find\)\)",
                         rules,
                     ):
-                        errors.extend(
-                            [
-                                "Expected a selinux rule (allow priv_app memfault_dumpster_service:service_manager find), please recheck integration"
-                            ]
-                        )
+                        errors.extend([
+                            "Expected a selinux rule (allow priv_app memfault_dumpster_service:service_manager find), please recheck integration - see https://mflt.io/android-sepolicy"
+                        ])
 
             return errors
 
@@ -869,6 +909,20 @@ class ValidateConnectedDevice(Command):
             )
         )
 
+        if self._bort_ota_app_id:
+            context = "privapp_data_file" if sdk_version >= 29 else "app_data_file"
+            self._errors.extend(
+                _check_file_ownership_and_secontext(
+                    path=f"/data/data/{self._bort_ota_app_id}/",
+                    mode="drwx------",
+                    owner="u[0-9]+_a[0-9]+",
+                    group="u[0-9]+_a[0-9]+",
+                    secontext=f"u:object_r:{context}:s0",
+                    directory=True,
+                    device=self._device,
+                )
+            )
+
         self._errors.extend(
             _check_file_ownership_and_secontext(
                 path=MEMFAULT_STRUCTURED_RC_PATH,
@@ -882,23 +936,11 @@ class ValidateConnectedDevice(Command):
 
         self._errors.extend(
             _check_file_ownership_and_secontext(
-                path=MEMFAULT_STRUCTURED_EXEC_PATH,
-                mode="-rwxr-xr-x",
-                owner="root",
-                group="shell",
-                secontext="u:object_r:memfault_structured_exec:s0",
-                directory=True,
-                device=self._device,
-            )
-        )
-
-        self._errors.extend(
-            _check_file_ownership_and_secontext(
-                path=MEMFAULT_STRUCTURED_DATA_PATH,
+                path=f"/data/data/{MEMFAULT_STRUCTURED_APPLICATION_ID}/",
                 mode="drwx------",
                 owner="system",
                 group="system",
-                secontext="u:object_r:memfault_structured_data_file:s0",
+                secontext="u:object_r:system_app_data_file:s0",
                 directory=True,
                 device=self._device,
             )
@@ -915,6 +957,9 @@ class ValidateConnectedDevice(Command):
             ("android.permission.ACCESS_NETWORK_STATE", 1),
             ("android.permission.DUMP", 1),
             ("android.permission.WAKE_LOCK", 1),
+            ("android.permission.READ_LOGS", 1),
+            ("android.permission.PACKAGE_USAGE_STATS", 1),
+            ("android.permission.INTERACT_ACROSS_USERS", 1),
         ):
             if sdk_version < min_sdk_version:
                 logging.info(
@@ -950,13 +995,63 @@ class ValidateConnectedDevice(Command):
                 )
             return version_names[0]
 
-        versions = set(_find_version_names(info) for info in package_infos if info)
+        versions = {_find_version_names(info) for info in package_infos if info}
         if len(versions) > 1:
             self._errors.append(
                 _format_error(description, "Different versions found:", *package_infos)
             )
 
         logging.info("\tTest passed")
+
+    def _query_bort_diagnostics(self) -> Tuple[Dict[str, str], List[str]]:
+        output, errors = _query_provider(
+            "content://com.memfault.bort.diagnostics/query", self._device
+        )
+        if not output:
+            self._errors.append(_format_error("Error querying Bort diagnostics provider", *errors))
+            return {}, []
+        """
+        Example output:
+Row: 0 key=enabled, value=true
+Row: 1 key=requires_runtime_enable, value=true
+        """
+        diagnostic_entries: Dict[str, str] = {}
+        errors: List[str] = []
+        for entry in re.findall(r"Row: \d+ key=(\S+), value=(.*)", output, re.RegexFlag.MULTILINE):
+            key = entry[0]
+            value = entry[1]
+            if key == "bort_error":
+                errors.append(value)
+            else:
+                diagnostic_entries[key] = value
+        return diagnostic_entries, errors
+
+    def _validate_bort_diagnostics(self):
+        diagnostics, errors = self._query_bort_diagnostics()
+        logging.info("Bort Diagnostics:")
+        for key, value in diagnostics.items():
+            logging.info("   %s = %s", key, value)
+        if not self._ignore_enabled:
+            if diagnostics.get("enabled", None) != "true":
+                self._errors.append(
+                    "Bort is not enabled. Bort should be enabled to run the validation tool. To ignore this, run again with --ignore-enabled"
+                )
+        if len(errors) > 0:
+            logging.warning("\nBort Errors:")
+            for error in errors:
+                logging.warning("   %s", error)
+
+    def _validate_jobs(self):
+        output, errors = _query_jobscheduler(self._bort_app_id, self._device)
+        if not output:
+            self._errors.append(_format_error("Error querying Bort diagnostics provider", *errors))
+            return
+
+        # We can't identify jobs (there is no tag or ID which we can map to Bort), so just check for all unsatisfied
+        # constraints.
+        for line in output.splitlines():
+            if line.strip().startswith("Unsatisfied constraints:"):
+                logging.info(line)
 
     def run(self):
         should_rollover = os.path.exists(LOG_FILE) and os.path.getsize(LOG_FILE) > 0
@@ -967,9 +1062,11 @@ class ValidateConnectedDevice(Command):
         logging.getLogger("").addHandler(fh)
 
         _check_bort_app_id(self._bort_app_id)
+        if self._bort_ota_app_id:
+            _check_bort_ota_app_id(self._bort_ota_app_id)
         _check_feature_name(self._vendor_feature_name)
         logging.info(LOG_ENTRY_SEPARATOR)
-        logging.info("validate-sdk-integration %s", datetime.datetime.now())
+        logging.info("validate-sdk-integration %s", datetime.datetime.now())  # noqa: DTZ005
         errors = _verify_device_connected(self._device)
         if errors:
             _log_errors(errors)
@@ -1003,6 +1100,17 @@ class ValidateConnectedDevice(Command):
                 device=self._device,
             )
         )
+
+        if self._bort_ota_app_id:
+            self._errors.extend(
+                _run_adb_shell_cmd_and_expect(
+                    description="Verifying MemfaultBort OTA app is installed",
+                    cmd=("pm", "path", self._bort_ota_app_id),
+                    matcher=_RegexMatcher(BORT_OTA_APK_PATH),
+                    device=self._device,
+                )
+            )
+
         self._errors.extend(
             _run_adb_shell_cmd_and_expect(
                 description=f"Verifying device has feature {self._vendor_feature_name}",
@@ -1033,6 +1141,9 @@ class ValidateConnectedDevice(Command):
             )
         )
 
+        self._validate_bort_diagnostics()
+        self._validate_jobs()
+
         if self._errors:
             for error in self._errors:
                 logging.info(LOG_ENTRY_SEPARATOR)
@@ -1042,6 +1153,113 @@ class ValidateConnectedDevice(Command):
         logging.info("")
         logging.info("SUCCESS: Bort SDK on the connected device appears to be valid")
         logging.info("Results written to %s", LOG_FILE)
+
+
+class GenerateKeystore(Command):
+    """Generate a keystore for bort applications"""
+
+    KEYSTORE_PROPERTIES_TEMPLATE = Template(
+        """keyAlias=release_key
+keyPassword=$password
+storeFile=$store_file
+storePassword=$password"""
+    )
+
+    def __init__(self, path, keytool_path, ota_keystore, password):
+        self._path = path
+        self._keytool_path = keytool_path
+        self._is_ota_keystore = ota_keystore
+        self._keystore_name = "ota_keystore" if ota_keystore else "bort_keystore"
+        self._bort_properties_key = (
+            "BORT_OTA_KEYSTORE_PROPERTIES_PATH" if ota_keystore else "BORT_KEYSTORE_PROPERTIES_PATH"
+        )
+        self._password = password
+
+    @classmethod
+    def register(cls, create_parser):
+        parser = create_parser(cls, "generate-keystore")
+
+        parser.add_argument(
+            "path",
+            type=readable_dir_type,
+            help="The path to the MemfaultPackages folder from the SDK",
+        )
+
+        parser.add_argument(
+            "--keytool-path",
+            type=executable_bin_type,
+            help="Path to the Java Keytool binary, defaults to $JAVA_HOME/bin/keytool",
+            default=f"{os.environ.get('JAVA_HOME', None)}/bin/keytool",
+        )
+
+        parser.add_argument(
+            "--ota-keystore",
+            help="Generates a keystore for the OTA application",
+            action="store_true",
+        )
+
+        parser.add_argument(
+            "--password",
+            type=str,
+            help="String to set as the password for the keystore and key",
+            required=True,
+        )
+
+    def run(self):
+        if os.path.exists(f"{self._path}/{self._keystore_name}.jks"):
+            raise FileExistsError(
+                f"Can't create {self._path}/{self._keystore_name}.jks as it already exists. Please delete it and rerun if you want to make a new keystore."
+            )
+        cmd = [
+            self._keytool_path,
+            "-genkeypair",
+            "-alias",
+            "release_key",
+            "-keypass",
+            self._password,
+            "-keystore",
+            f"{self._keystore_name}.jks",
+            "-storepass",
+            self._password,
+            "-validity",
+            "10000",
+            "-keyalg",
+            "rsa",
+        ]
+        subprocess.check_output(
+            cmd,
+            cwd=os.path.join(self._path),
+            stderr=sys.stderr,
+        )
+        logging.info("Keystore generated at %s", f"{self._path}/{self._keystore_name}.jks")
+
+        keystore_properties = self.KEYSTORE_PROPERTIES_TEMPLATE.substitute(
+            password=self._password,
+            store_file=f"{self._keystore_name}.jks",
+        )
+        keystore_properties_file = f"{self._path}/{self._keystore_name}.properties"
+        with open(keystore_properties_file, "w") as properties_file:
+            properties_file.write(keystore_properties)
+
+        logging.info(
+            "Updating %s/bort.properties key %s with %s",
+            self._path,
+            self._bort_properties_key,
+            keystore_properties_file,
+        )
+
+        with open(f"{self._path}/bort.properties", "r+") as bort_prop_file:
+            lines = bort_prop_file.readlines()
+            for line_no, _ in enumerate(lines):
+                if lines[line_no].startswith(self._bort_properties_key):
+                    logging.info("replacing line %s: %s", line_no, lines[line_no])
+                    lines[line_no] = (
+                        f"{self._bort_properties_key}={self._keystore_name}.properties\n"
+                    )
+                    break
+            bort_prop_file.seek(0)
+            bort_prop_file.truncate()
+            bort_prop_file.writelines(lines)
 
 
 class CommandLineInterface:
@@ -1065,6 +1283,7 @@ class CommandLineInterface:
         RequestMetricCollection.register(create_parser)
         RequestUpdateConfig.register(create_parser)
         DevMode.register(create_parser)
+        GenerateKeystore.register(create_parser)
 
     def run(self):
         if tuple(int(i) for i in platform.python_version_tuple()) < PYTHON_MIN_VERSION:

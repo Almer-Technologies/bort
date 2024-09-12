@@ -57,7 +57,7 @@ class ResolutionTest {
                 monitoringResolution = Resolution.OFF,
                 debuggingResolution = Resolution.NORMAL,
                 loggingResolution = Resolution.OFF,
-            ).shouldUpload(bugReportManifest)
+            ).shouldUpload(bugReportManifest),
         )
     }
 
@@ -68,7 +68,7 @@ class ResolutionTest {
                 monitoringResolution = Resolution.OFF,
                 debuggingResolution = Resolution.OFF,
                 loggingResolution = Resolution.OFF,
-            ).shouldUpload(bugReportManifest)
+            ).shouldUpload(bugReportManifest),
         )
     }
 
@@ -97,7 +97,7 @@ class ResolutionTest {
                 monitoringResolution = Resolution.OFF,
                 debuggingResolution = Resolution.NORMAL,
                 loggingResolution = Resolution.OFF,
-            ).shouldUpload(dropboxManifest)
+            ).shouldUpload(dropboxManifest),
         )
     }
 
@@ -108,7 +108,7 @@ class ResolutionTest {
                 monitoringResolution = Resolution.OFF,
                 debuggingResolution = Resolution.OFF,
                 loggingResolution = Resolution.OFF,
-            ).shouldUpload(dropboxManifest)
+            ).shouldUpload(dropboxManifest),
         )
     }
 
@@ -121,6 +121,8 @@ class ResolutionTest {
             heartbeatIntervalMs = 0,
             customMetrics = emptyMap(),
             builtinMetrics = emptyMap(),
+            reportType = "heartbeat",
+            reportName = null,
         ),
         debuggingResolution = Resolution.NOT_APPLICABLE,
         loggingResolution = Resolution.NOT_APPLICABLE,
@@ -134,7 +136,7 @@ class ResolutionTest {
                 debuggingResolution = Resolution.OFF,
                 loggingResolution = Resolution.OFF,
                 monitoringResolution = Resolution.NORMAL,
-            ).shouldUpload(heartbeatManifest)
+            ).shouldUpload(heartbeatManifest),
         )
     }
 
@@ -145,7 +147,7 @@ class ResolutionTest {
                 monitoringResolution = Resolution.OFF,
                 debuggingResolution = Resolution.OFF,
                 loggingResolution = Resolution.OFF,
-            ).shouldUpload(heartbeatManifest)
+            ).shouldUpload(heartbeatManifest),
         )
     }
 
@@ -173,7 +175,7 @@ class ResolutionTest {
                 monitoringResolution = Resolution.OFF,
                 debuggingResolution = Resolution.NORMAL,
                 loggingResolution = Resolution.OFF,
-            ).shouldUpload(logcatManifestNormal)
+            ).shouldUpload(logcatManifestNormal),
         )
     }
 
@@ -184,7 +186,7 @@ class ResolutionTest {
                 debuggingResolution = Resolution.OFF,
                 loggingResolution = Resolution.OFF,
                 monitoringResolution = Resolution.OFF,
-            ).shouldUpload(logcatManifestNormal)
+            ).shouldUpload(logcatManifestNormal),
         )
     }
 
@@ -195,7 +197,7 @@ class ResolutionTest {
                 monitoringResolution = Resolution.OFF,
                 debuggingResolution = Resolution.OFF,
                 loggingResolution = Resolution.NORMAL,
-            ).shouldUpload(logcatManifestNoDebugging)
+            ).shouldUpload(logcatManifestNoDebugging),
         )
     }
 
@@ -206,7 +208,7 @@ class ResolutionTest {
                 monitoringResolution = Resolution.OFF,
                 debuggingResolution = Resolution.NORMAL,
                 loggingResolution = Resolution.OFF,
-            ).shouldUpload(logcatManifestNoDebugging)
+            ).shouldUpload(logcatManifestNoDebugging),
         )
     }
 }

@@ -1,5 +1,10 @@
 package com.memfault.bort.settings
 
+import androidx.work.NetworkType
+import androidx.work.NetworkType.CONNECTED
+import androidx.work.NetworkType.UNMETERED
+import assertk.assertThat
+import assertk.assertions.isEqualTo
 import com.memfault.bort.AndroidAppIdScrubbingRule
 import com.memfault.bort.BortJson
 import com.memfault.bort.CredentialScrubbingRule
@@ -14,25 +19,23 @@ import com.memfault.bort.shared.LogcatPriority
 import com.memfault.bort.time.boxed
 import io.mockk.every
 import io.mockk.mockk
+import kotlinx.serialization.SerializationException
+import org.junit.jupiter.api.Assertions.assertThrows
+import org.junit.jupiter.api.Test
+import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.ValueSource
 import kotlin.time.Duration.Companion.days
 import kotlin.time.Duration.Companion.hours
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
-import kotlinx.serialization.SerializationException
-import org.junit.jupiter.api.Assertions.assertEquals
-import org.junit.jupiter.api.Assertions.assertThrows
-import org.junit.jupiter.api.Test
 
 class DynamicSettingsProviderTest {
     private val projectKeyProvider = mockk<ProjectKeyProvider>(relaxed = true)
 
     @Test
     fun testParseRemoteSettings() {
-        assertEquals(
-            EXPECTED_SETTINGS,
-            SETTINGS_FIXTURE.toSettings(),
-        )
+        assertThat(SETTINGS_FIXTURE.toSettings()).isEqualTo(EXPECTED_SETTINGS)
     }
 
     /**
@@ -45,10 +48,7 @@ class DynamicSettingsProviderTest {
      */
     @Test
     fun testParseRemoteSettingsWithMissingFields() {
-        assertEquals(
-            EXPECTED_SETTINGS_DEFAULT,
-            SETTINGS_FIXTURE_WITH_MISSING_FIELDS.toSettings(),
-        )
+        assertThat(SETTINGS_FIXTURE_WITH_MISSING_FIELDS.toSettings()).isEqualTo(EXPECTED_SETTINGS_DEFAULT)
     }
 
     @Test
@@ -56,12 +56,27 @@ class DynamicSettingsProviderTest {
         assertThrows(SerializationException::class.java) { FetchedSettings.from("trash") { BortJson } }
     }
 
+    companion object {
+        private const val MODEL_KEY_OLD = "model.key.old"
+        private const val MODEL_KEY_NEW = "model.key.new"
+    }
+
     @Test
     fun testInvalidation() {
         val storedSettingsPreferenceProvider: StoredSettingsPreferenceProvider = mockk {
             every { get() } returns
-                SETTINGS_FIXTURE.toSettings().copy(bortMinLogcatLevel = LogLevel.VERBOSE.level) andThen
-                SETTINGS_FIXTURE.toSettings().copy(bortMinLogcatLevel = LogLevel.INFO.level)
+                SETTINGS_FIXTURE.toSettings()
+                    .copy(
+                        bortMinLogcatLevel = LogLevel.VERBOSE.level,
+                        deviceInfoAndroidHardwareVersionKey = MODEL_KEY_OLD,
+                        httpApiZipCompressionLevel = 1,
+                    ) andThen
+                SETTINGS_FIXTURE.toSettings()
+                    .copy(
+                        bortMinLogcatLevel = LogLevel.INFO.level,
+                        deviceInfoAndroidHardwareVersionKey = MODEL_KEY_NEW,
+                        httpApiZipCompressionLevel = 2,
+                    )
         }
         val dumpsterCapabilities = mockk<DumpsterCapabilities> {
             every { supportsContinuousLogging() } answers { true }
@@ -72,19 +87,23 @@ class DynamicSettingsProviderTest {
             dumpsterCapabilities = dumpsterCapabilities,
             projectKeyProvider = projectKeyProvider,
             cachedClientServerMode = mockk(),
-            devMode = mockk()
+            devMode = mockk(),
         )
 
         // The first call will use the value in resources
-        assertEquals(LogLevel.VERBOSE, settings.minLogcatLevel)
+        assertThat(settings.minLogcatLevel).isEqualTo(LogLevel.VERBOSE)
 
         // The second call will still operate on a cached settings value
-        assertEquals(LogLevel.VERBOSE, settings.minLogcatLevel)
+        assertThat(settings.minLogcatLevel).isEqualTo(LogLevel.VERBOSE)
+        assertThat(settings.deviceInfoSettings.androidHardwareVersionKey).isEqualTo(MODEL_KEY_OLD)
+        assertThat(settings.httpApiSettings.zipCompressionLevel).isEqualTo(1)
 
         // This will cause settings to be reconstructed on the next call, which will
         // read the new min_log_level from shared preferences
         settings.invalidate()
-        assertEquals(LogLevel.INFO, settings.minLogcatLevel)
+        assertThat(settings.minLogcatLevel).isEqualTo(LogLevel.INFO)
+        assertThat(settings.deviceInfoSettings.androidHardwareVersionKey).isEqualTo(MODEL_KEY_NEW)
+        assertThat(settings.httpApiSettings.zipCompressionLevel).isEqualTo(2)
     }
 
     @Test
@@ -96,7 +115,7 @@ class DynamicSettingsProviderTest {
             override fun get(): FetchedSettings = SETTINGS_FIXTURE.toSettings()
         }
         val provider = DynamicSettingsProvider(prefProvider, dumpsterCapabilities, mockk(), mockk(), projectKeyProvider)
-        assertEquals(CONTINUOUS, provider.logcatSettings.collectionMode)
+        assertThat(provider.logcatSettings.collectionMode).isEqualTo(CONTINUOUS)
     }
 
     @Test
@@ -110,7 +129,39 @@ class DynamicSettingsProviderTest {
 
         val provider = DynamicSettingsProvider(prefProvider, dumpsterCapabilities, mockk(), mockk(), projectKeyProvider)
 
-        assertEquals(PERIODIC, provider.logcatSettings.collectionMode)
+        assertThat(provider.logcatSettings.collectionMode).isEqualTo(PERIODIC)
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = [true, false])
+    fun `otaDownloadNetworkConstraint default UNSET`(allowMeteredConnection: Boolean) {
+        val defaultSettings = SETTINGS_FIXTURE.toSettings()
+            .copy(otaDownloadNetworkConstraintAllowMeteredConnection = allowMeteredConnection)
+
+        val prefProvider = object : ReadonlyFetchedSettingsProvider {
+            override fun get(): FetchedSettings = defaultSettings
+        }
+
+        val provider = DynamicSettingsProvider(prefProvider, mockk(), mockk(), mockk(), projectKeyProvider)
+
+        assertThat(provider.otaSettings.downloadNetworkConstraint)
+            .isEqualTo(if (allowMeteredConnection) CONNECTED else UNMETERED)
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = ["NOT_ROAMING", "CONNECTED", "UNMETERED"])
+    fun `otaDownloadNetworkConstraint override NetworkType`(networkType: String) {
+        val defaultSettings = SETTINGS_FIXTURE.toSettings()
+            .copy(otaDownloadNetworkConstraint = networkType)
+
+        val prefProvider = object : ReadonlyFetchedSettingsProvider {
+            override fun get(): FetchedSettings = defaultSettings
+        }
+
+        val provider = DynamicSettingsProvider(prefProvider, mockk(), mockk(), mockk(), projectKeyProvider)
+
+        assertThat(provider.otaSettings.downloadNetworkConstraint)
+            .isEqualTo(NetworkType.valueOf(networkType))
     }
 }
 
@@ -127,7 +178,7 @@ internal val EXPECTED_SETTINGS_DEFAULT = FetchedSettings(
     bugReportFirstBugReportDelayAfterBoot = 5678.milliseconds.boxed(),
     bugReportRequestRateLimitingSettings = RateLimitingSettings(
         defaultCapacity = 3,
-        defaultPeriod = 1800000.milliseconds.boxed(),
+        defaultPeriod = 30.minutes.boxed(),
         maxBuckets = 1,
     ),
     bugReportMaxStorageBytes = 50000000,
@@ -148,36 +199,35 @@ internal val EXPECTED_SETTINGS_DEFAULT = FetchedSettings(
     deviceInfoAndroidHardwareVersionKey = "ro.product.hw",
     dropBoxAnrsRateLimitingSettings = RateLimitingSettings(
         defaultCapacity = 10,
-        defaultPeriod = 900000.milliseconds.boxed(),
+        defaultPeriod = 15.minutes.boxed(),
         maxBuckets = 1,
     ),
     dropBoxExcludedTags = setOf("TAG1", "TAG2"),
     dropBoxDataSourceEnabled = true,
     dropBoxJavaExceptionsRateLimitingSettings = RateLimitingSettings(
         defaultCapacity = 4,
-        defaultPeriod = 900000.milliseconds.boxed(),
+        defaultPeriod = 15.minutes.boxed(),
         maxBuckets = 100,
     ),
     dropBoxKmsgsRateLimitingSettings = RateLimitingSettings(
         defaultCapacity = 10,
-        defaultPeriod = 900000.milliseconds.boxed(),
+        defaultPeriod = 15.minutes.boxed(),
         maxBuckets = 1,
     ),
     dropBoxStructuredLogRateLimitingSettings = RateLimitingSettings(
         defaultCapacity = 10,
-        defaultPeriod = 900000.milliseconds.boxed(),
+        defaultPeriod = 15.minutes.boxed(),
         maxBuckets = 1,
     ),
     dropBoxTombstonesRateLimitingSettings = RateLimitingSettings(
         defaultCapacity = 10,
-        defaultPeriod = 900000.milliseconds.boxed(),
+        defaultPeriod = 15.minutes.boxed(),
         maxBuckets = 1,
     ),
     fileUploadHoldingAreaMaxStoredEventsOfInterest = 50,
     fileUploadHoldingAreaTrailingMargin = 300000.milliseconds.boxed(),
     httpApiDeviceBaseUrl = "https://device2.memfault.com",
     httpApiFilesBaseUrl = "https://files2.memfault.com",
-    httpApiIngressBaseUrl = "https://ingress2.memfault.com",
     httpApiUploadCompressionEnabled = false,
     httpApiUploadNetworkConstraintAllowMeteredConnection = false,
     httpApiConnectTimeout = 30.seconds.boxed(),
@@ -206,7 +256,7 @@ internal val EXPECTED_SETTINGS_DEFAULT = FetchedSettings(
     logcatContinuousDumpThresholdTime = 15.minutes.boxed(),
     metricsCollectionInterval = 91011.milliseconds.boxed(),
     metricsDataSourceEnabled = false,
-    metricsSystemProperties = listOf("ro.build.type"),
+    metricsSystemProperties = listOf("ro.build.type", "persist.sys.timezone"),
     metricsAppVersions = listOf(),
     metricsMaxNumAppVersions = 50,
     metricsReporterCollectionInterval = 10.minutes.boxed(),
@@ -215,8 +265,14 @@ internal val EXPECTED_SETTINGS_DEFAULT = FetchedSettings(
     rebootEventsDataSourceEnabled = true,
     rebootEventsRateLimitingSettings = RateLimitingSettings(
         defaultCapacity = 5,
-        defaultPeriod = 900000.milliseconds.boxed(),
+        defaultPeriod = 15.minutes.boxed(),
         maxBuckets = 1,
+    ),
+    selinuxViolationEventsDataSourceEnabled = false,
+    selinuxViolationEventsRateLimitingSettings = RateLimitingSettings(
+        defaultCapacity = 2,
+        defaultPeriod = 24.hours.boxed(),
+        maxBuckets = 15,
     ),
     structuredLogDataSourceEnabled = true,
     structuredLogDumpPeriod = 60.minutes.boxed(),
@@ -225,7 +281,7 @@ internal val EXPECTED_SETTINGS_DEFAULT = FetchedSettings(
     structuredLogNumEventsBeforeDump = 1500,
     structuredLogRateLimitingSettings = RateLimitingSettings(
         defaultCapacity = 1000,
-        defaultPeriod = 900000.milliseconds.boxed(),
+        defaultPeriod = 15.minutes.boxed(),
         maxBuckets = 1,
     ),
     metricReportRateLimitingSettings = RateLimitingSettings(
@@ -234,6 +290,7 @@ internal val EXPECTED_SETTINGS_DEFAULT = FetchedSettings(
         maxBuckets = 1,
     ),
     metricReportEnabled = true,
+    metricsCachePackages = true,
 )
 
 private val EXPECTED_SETTINGS = EXPECTED_SETTINGS_DEFAULT.copy(
@@ -244,11 +301,13 @@ private val EXPECTED_SETTINGS = EXPECTED_SETTINGS_DEFAULT.copy(
     logcatCollectionMode = CONTINUOUS,
     storageUsageReporterTempMaxStorageBytes = 10000001,
     storageBortTempMaxStorageBytes = 250000001,
+    batteryStatsCollectSummary = true,
 )
 
 internal val SETTINGS_FIXTURE = """
             {
               "data": {
+                "battery_stats.collect_summary": true,
                 "battery_stats.data_source_enabled": false,
                 "battery_stats.command_timeout_ms" : 60000,
                 "bort.min_log_level": 5,
@@ -322,7 +381,6 @@ internal val SETTINGS_FIXTURE = """
                 "file_upload_holding_area.trailing_margin_ms": 300000,
                 "http_api.device_base_url": "https://device2.memfault.com",
                 "http_api.files_base_url": "https://files2.memfault.com",
-                "http_api.ingress_base_url": "https://ingress2.memfault.com",
                 "http_api.upload_compression_enabled": False,
                 "http_api.upload_network_constraint_allow_metered_connection": False,
                 "http_api.connect_timeout_ms": 30000,
@@ -354,7 +412,7 @@ internal val SETTINGS_FIXTURE = """
                 "logcat.continuous_dump_wrapping_timeout_ms": 900000,
                 "metrics.collection_interval_ms": 91011,
                 "metrics.data_source_enabled": false,
-                "metrics.system_properties": ["ro.build.type"],
+                "metrics.system_properties": ["ro.build.type", "persist.sys.timezone"],
                 "metrics.app_versions": [],
                 "metrics.max_num_app_versions": 50,
                 "metrics.reporter_collection_interval_ms": 600000,
@@ -365,6 +423,12 @@ internal val SETTINGS_FIXTURE = """
                     "default_capacity": 5,
                     "default_period_ms": 900000,
                     "max_buckets": 1
+                },
+                "selinux_violation_events.data_source_enabled": false,
+                "selinux_violation_events.rate_limiting_settings": {
+                    "default_capacity": 2,
+                    "default_period_ms": 86400000,
+                    "max_buckets": 15
                 },
                 "structured_log.data_source_enabled": true,
                 "structured_log.dump_period_ms": 3600000,
@@ -450,7 +514,6 @@ internal val SETTINGS_FIXTURE_WITH_MISSING_FIELDS = """
                 "file_upload_holding_area.trailing_margin_ms": 300000,
                 "http_api.device_base_url": "https://device2.memfault.com",
                 "http_api.files_base_url": "https://files2.memfault.com",
-                "http_api.ingress_base_url": "https://ingress2.memfault.com",
                 "http_api.upload_compression_enabled": False,
                 "http_api.upload_network_constraint_allow_metered_connection": False,
                 "http_api.connect_timeout_ms": 30000,
@@ -469,6 +532,12 @@ internal val SETTINGS_FIXTURE_WITH_MISSING_FIELDS = """
                     "default_capacity": 5,
                     "default_period_ms": 900000,
                     "max_buckets": 1
+                },
+                "selinux_violation_events.data_source_enabled": false,
+                "selinux_violation_events.rate_limiting_settings": {
+                    "default_capacity": 2,
+                    "default_period_ms": 86400000,
+                    "max_buckets": 15
                 },
                 "structured_log.data_source_enabled": true,
                 "structured_log.dump_period_ms": 3600000,

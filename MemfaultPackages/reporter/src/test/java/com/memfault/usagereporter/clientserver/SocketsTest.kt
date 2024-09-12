@@ -3,13 +3,13 @@ package com.memfault.usagereporter.clientserver
 import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
+import kotlinx.coroutines.test.runTest
+import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Test
 import java.nio.ByteBuffer
 import java.nio.channels.AsynchronousByteChannel
 import java.nio.channels.CompletionHandler
 import kotlin.math.min
-import kotlinx.coroutines.runBlocking
-import org.junit.jupiter.api.Assertions.assertEquals
-import org.junit.jupiter.api.Test
 
 internal class SocketsTest {
     private val channel: AsynchronousByteChannel = mockk {
@@ -32,7 +32,7 @@ internal class SocketsTest {
     private var numBytes = 0
 
     @Test
-    fun singleWrite() = runBlocking {
+    fun singleWrite() = runTest {
         numBytes = 50
         val buffer = ByteBuffer.allocate(50)
         assertEquals(50, channel.cWrite(buffer))
@@ -40,7 +40,7 @@ internal class SocketsTest {
     }
 
     @Test
-    fun multipleWrites() = runBlocking {
+    fun multipleWrites() = runTest {
         numBytes = 50
         val buffer = ByteBuffer.allocate(101)
         assertEquals(101, channel.cWrite(buffer))
@@ -48,14 +48,14 @@ internal class SocketsTest {
     }
 
     @Test
-    fun singleRead() = runBlocking {
+    fun singleRead() = runTest {
         numBytes = 500
         assertEquals(500, channel.cRead(500).remaining())
         coVerify(exactly = 1) { channel.read(any(), Unit, any()) }
     }
 
     @Test
-    fun multipleReads() = runBlocking {
+    fun multipleReads() = runTest {
         numBytes = 1000
         assertEquals(5001, channel.cRead(5001).remaining())
         coVerify(exactly = 6) { channel.read(any(), Unit, any()) }

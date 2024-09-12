@@ -3,14 +3,13 @@ package com.memfault.bort
 import android.app.Application
 import com.memfault.bort.metrics.DevicePropertiesStore
 import com.memfault.bort.shared.Logger
-import javax.inject.Inject
 import kotlinx.serialization.json.JsonPrimitive
+import javax.inject.Inject
 
 class IntegrationChecker @Inject constructor(
     private val application: Application,
-    private val devicePropertiesStore: DevicePropertiesStore,
 ) {
-    fun checkIntegrationAndReport(): Map<String, JsonPrimitive> {
+    fun checkIntegrationAndReport(devicePropertiesStore: DevicePropertiesStore): Map<String, JsonPrimitive> {
         val valid = isSeContextValid()
         devicePropertiesStore.upsert(name = METRIC_NAME, value = valid, internal = true)
         return mapOf(METRIC_NAME to JsonPrimitive(valid))

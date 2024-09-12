@@ -1,7 +1,17 @@
 <permissions>
     <feature name="$BORT_FEATURE_NAME" />
+    <feature name="com.memfault.bort.privperms" />
     <allow-in-power-save package="$BORT_APPLICATION_ID" />
     <privapp-permissions package="$BORT_APPLICATION_ID">
         <permission name="android.permission.DUMP" />
+        <!-- DropBoxManager.getNextEntry() requires these: -->
+        <permission name="android.permission.READ_LOGS" />
+        <permission name="android.permission.PACKAGE_USAGE_STATS" />
+        <!-- UserHandle.CURRENT and battery stats require this:-->
+        <permission name="android.permission.INTERACT_ACROSS_USERS" />
+        <!-- Enable dropbox tags -->
+        <permission name="android.permission.WRITE_SECURE_SETTINGS" />
+        <!-- Read IMEI -->
+        <permission name="android.permission.READ_PRIVILEGED_PHONE_STATE" />
     </privapp-permissions>
 </permissions>

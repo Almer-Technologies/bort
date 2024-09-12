@@ -6,12 +6,12 @@ import io.mockk.every
 import io.mockk.just
 import io.mockk.mockk
 
-interface MockSharedPreferences : SharedPreferences {
+interface FakeSharedPreferences : SharedPreferences {
     val backingStorage: MutableMap<String, Any>
     val editor: SharedPreferences.Editor
 }
 
-fun makeFakeSharedPreferences(): MockSharedPreferences {
+fun makeFakeSharedPreferences(): FakeSharedPreferences {
     val backingStorage = mutableMapOf<String, Any>()
     val editor = mockk<SharedPreferences.Editor> {
         every {
@@ -21,7 +21,19 @@ fun makeFakeSharedPreferences(): MockSharedPreferences {
             this@mockk
         }
         every {
+            putLong(any(), any())
+        } answers {
+            backingStorage.put(firstArg(), secondArg())
+            this@mockk
+        }
+        every {
             putString(any(), any())
+        } answers {
+            backingStorage.put(firstArg(), secondArg())
+            this@mockk
+        }
+        every {
+            putBoolean(any(), any())
         } answers {
             backingStorage.put(firstArg(), secondArg())
             this@mockk
@@ -37,16 +49,26 @@ fun makeFakeSharedPreferences(): MockSharedPreferences {
         }
     }
 
-    val m: MockSharedPreferences = mockk {
+    val m: FakeSharedPreferences = mockk {
         every {
             getFloat(any(), any())
         } answers {
             backingStorage[firstArg()] as Float? ?: secondArg()
         }
         every {
+            getLong(any(), any())
+        } answers {
+            backingStorage[firstArg()] as Long? ?: secondArg()
+        }
+        every {
             getString(any(), any())
         } answers {
             backingStorage[firstArg()] as String? ?: secondArg()
+        }
+        every {
+            getBoolean(any(), any())
+        } answers {
+            backingStorage[firstArg()] as Boolean? ?: secondArg()
         }
         every {
             edit()

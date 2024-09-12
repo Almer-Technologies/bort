@@ -5,11 +5,11 @@ import com.memfault.bort.fileExt.deleteSilently
 import com.memfault.bort.test.util.TestTemporaryFileFactory
 import com.memfault.bort.tokenbucket.TokenBucketStore
 import io.mockk.mockk
-import java.io.File
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.File
 
 internal class TombstoneUploadingEntryProcessorDelegateTest {
     private val packageManagerClient: PackageManagerClient = mockk(relaxed = true)
@@ -23,6 +23,7 @@ internal class TombstoneUploadingEntryProcessorDelegateTest {
                 tokenBucketStore = tokenBucketStore,
                 tempFileFactory = TestTemporaryFileFactory,
                 scrubTombstones = { false },
+                operationalCrashesExclusions = { emptyList() },
             )
         val inputFile = loadFile("test_tombstone_1.txt")
         val outputFile = processor.scrub(inputFile, "UPLOAD_TOMBSTONE")
@@ -38,6 +39,7 @@ internal class TombstoneUploadingEntryProcessorDelegateTest {
                 tokenBucketStore = tokenBucketStore,
                 tempFileFactory = TestTemporaryFileFactory,
                 scrubTombstones = { true },
+                operationalCrashesExclusions = { emptyList() },
             )
         val inputFile = loadFile("test_tombstone_1.txt")
         val outputFile = processor.scrub(inputFile, "UPLOAD_TOMBSTONE")
@@ -54,6 +56,7 @@ internal class TombstoneUploadingEntryProcessorDelegateTest {
                 tokenBucketStore = tokenBucketStore,
                 tempFileFactory = TestTemporaryFileFactory,
                 scrubTombstones = { true },
+                operationalCrashesExclusions = { emptyList() },
             )
         val inputFile = loadFile("test_tombstone_2.txt")
         val outputFile = processor.scrub(inputFile, "UPLOAD_TOMBSTONE")
@@ -64,7 +67,7 @@ internal class TombstoneUploadingEntryProcessorDelegateTest {
 
     private fun loadFile(name: String): File {
         val file = File(
-            TombstoneUploadingEntryProcessorDelegateTest::class.java.getResource("/$name")!!.path
+            TombstoneUploadingEntryProcessorDelegateTest::class.java.getResource("/$name")!!.path,
         )
         val tempFile = File.createTempFile("tmptombstone", "temptombstone.txt")
         tempFile.deleteSilently()

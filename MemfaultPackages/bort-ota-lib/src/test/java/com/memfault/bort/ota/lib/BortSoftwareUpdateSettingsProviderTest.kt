@@ -11,10 +11,10 @@ import com.memfault.bort.shared.SoftwareUpdateSettings.Companion.createCursor
 import com.memfault.bort.shared.asLegacyOtaSettings
 import io.mockk.every
 import io.mockk.mockk
-import junit.framework.Assert.assertEquals
-import junit.framework.Assert.assertNull
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -60,14 +60,14 @@ class BortSoftwareUpdateSettingsProviderTest {
     @Test
     fun newOtaNewBort() {
         cursor = createCursor(settings)
-        val provider = BortSoftwareUpdateSettingsProvider(resolver)
+        val provider = BortSoftwareUpdateSettingsFetcher(resolver)
         assertEquals(settings, provider.settings())
     }
 
     @Test
     fun newOtaOldBort() {
         cursor = legacyCreateCursor(settings.asLegacyOtaSettings())
-        val provider = BortSoftwareUpdateSettingsProvider(resolver)
+        val provider = BortSoftwareUpdateSettingsFetcher(resolver)
         // Default value should be used for new field.
         assertEquals(settings.copy(downloadNetworkTypeConstraint = UNMETERED), provider.settings())
     }
@@ -78,8 +78,8 @@ class BortSoftwareUpdateSettingsProviderTest {
     private fun legacyCreateCursor(settings: LegacySoftwareUpdateSettings) = MatrixCursor(arrayOf("settings")).apply {
         addRow(
             listOf(
-                Json.encodeToString(LegacySoftwareUpdateSettings.serializer(), settings)
-            )
+                Json.encodeToString(LegacySoftwareUpdateSettings.serializer(), settings),
+            ),
         )
     }
 
@@ -93,8 +93,8 @@ class BortSoftwareUpdateSettingsProviderTest {
         MatrixCursor(arrayOf("settings")).apply {
             addRow(
                 listOf(
-                    Json.encodeToString(SoftwareUpdateSettings.serializer(), settings)
-                )
+                    Json.encodeToString(SoftwareUpdateSettings.serializer(), settings),
+                ),
             )
         }
 
@@ -103,7 +103,7 @@ class BortSoftwareUpdateSettingsProviderTest {
      * it using the standard Json object and the legacy data class deserializer.
      */
     private class LegacyProviderClient(
-        private val resolver: ContentResolver
+        private val resolver: ContentResolver,
     ) {
         fun settings(): LegacySoftwareUpdateSettings? =
             resolver.query(
@@ -111,14 +111,13 @@ class BortSoftwareUpdateSettingsProviderTest {
                 null,
                 null,
                 null,
-                null
+                null,
             )?.use {
                 return if (it.moveToNext()) {
                     val serializedConfig = it.getString(0)
                     try {
                         Json.decodeFromString(LegacySoftwareUpdateSettings.serializer(), serializedConfig)
                     } catch (ex: SerializationException) {
-                        ex.printStackTrace()
                         null
                     }
                 } else {
