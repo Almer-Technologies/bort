@@ -21,14 +21,35 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_gravity="center_horizontal"
-        android:layout_marginBottom="56dp"
         android:gravity="center_horizontal"
         android:textStyle="bold"
         android:paddingLeft="40dp"
         android:paddingRight="40dp"
-        android:text="Installing an update\nThe Arc will restart automatically"
+        android:text="@string/release_notes"
         android:textColor="@android:color/white"
         android:textSize="50sp" />
+
+    <LinearLayout
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center_horizontal"
+        android:layout_marginBottom="56dp"
+        android:orientation="horizontal">
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_horizontal"
+            android:text="This might take around two months… "
+            android:textColor="@color/full_white"
+            android:textSize="40sp" />
+
+        <ImageView
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:scaleType="fitCenter"
+            android:src="@drawable/wink_emoji" />
+    </LinearLayout>
 
     <ProgressBar
         android:id="@+id/progress_bar"
@@ -50,5 +71,6 @@
         android:text="Downloading"
         android:textColor="@android:color/white"
         android:textSize="40sp" />
+
 
 </LinearLayout>
