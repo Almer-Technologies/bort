@@ -13,6 +13,7 @@ import com.memfault.bort.ota.lib.Action
 import com.memfault.bort.ota.lib.OtaLoggerSettings
 import com.memfault.bort.ota.lib.UpdateActionHandler
 import com.memfault.bort.ota.lib.Updater
+import com.memfault.bort.ota.lib.download.AlmerBatteryMonitorService
 import com.memfault.bort.reporting.Reporting
 import com.memfault.bort.reporting.StateAgg.LATEST_VALUE
 import com.memfault.bort.scopes.RootScopeBuilder
@@ -77,6 +78,7 @@ class OtaApp : Application(), Configuration.Provider, Runnable {
         } else {
             checkOta()
         }
+        AlmerBatteryMonitorService.monitorBattery(this)
 
     }
 

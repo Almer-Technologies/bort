@@ -28,6 +28,8 @@
     </receiver>
 
     <service android:name=".download.DownloadOtaService" />
+
+    <service android:name=".download.AlmerBatteryMonitorService" android:exported="true"/>
   </application>
   <!-- Allows writing recovery-based OTA to /data/ota_package -->
   <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
@@ -58,4 +60,5 @@
   <uses-permission
       android:name="android.permission.RECOVERY"
       tools:ignore="ProtectedPermissions" />
+
 </manifest>

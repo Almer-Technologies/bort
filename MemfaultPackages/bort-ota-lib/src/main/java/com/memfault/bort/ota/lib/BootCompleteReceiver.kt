@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.UserManager
 import android.util.Log
+import com.memfault.bort.ota.lib.download.AlmerBatteryMonitorService
 import com.memfault.bort.shared.BuildConfig
 import com.memfault.bort.shared.INTENT_ACTION_OTA_SETTINGS_CHANGED
 import com.memfault.bort.shared.InternalMetric
@@ -31,7 +32,10 @@ class BootCompleteReceiver : BroadcastReceiver() {
 
     @Inject lateinit var updater: Updater
 
+    @Inject lateinit var almerBatteryStats: AlmerBatteryStats
+
     override fun onReceive(context: Context, intent: Intent?) {
+        almerBatteryStats.checkBatteryStatus(context)
         if (Intent.ACTION_BOOT_COMPLETED == intent?.action) {
             onBootComplete(context)
         } else if (INTENT_ACTION_OTA_SETTINGS_CHANGED == intent?.action) {

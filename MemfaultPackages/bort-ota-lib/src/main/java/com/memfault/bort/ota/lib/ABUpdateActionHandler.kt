@@ -46,6 +46,7 @@ class ABUpdateActionHandler @Inject constructor(
     private val otaRulesProvider: OtaRulesProvider,
     private val softwareUpdateChecker: SoftwareUpdateChecker,
     private val settingsProvider: SoftwareUpdateSettingsProvider,
+    private val almerBatteryStats: AlmerBatteryStats
 ) : UpdateActionHandler {
     override fun initialize() {
         androidUpdateEngine.bind(object : AndroidUpdateEngineCallback {
@@ -187,6 +188,10 @@ class ABUpdateActionHandler @Inject constructor(
 
     private fun almerRebootDevice(ota: Ota?) {
         try {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+                Log.i("AlmerOTA", "No reboot for Android 9")
+                return
+            }
             //For force ota, we should reboot always
             if (ota?.releaseMetadata?.containsKey("minBuildUtc")!!) {
                 val minVer: String = ota.releaseMetadata.getOrElse("minBuildUtc") { "0" }
@@ -195,26 +200,24 @@ class ABUpdateActionHandler @Inject constructor(
                     return
                 }
             }
+
+            //Check battery
             val batteryStatus: Intent? = IntentFilter(Intent.ACTION_BATTERY_CHANGED).let { ifilter ->
                 application.registerReceiver(null, ifilter)
-            }
-
-            val batteryPct: Float? = batteryStatus?.let { intent ->
-                val level: Int = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
-                val scale: Int = intent.getIntExtra(BatteryManager.EXTRA_SCALE, -1)
-                level * 100 / scale.toFloat()
             }
 
             val status: Int = batteryStatus?.getIntExtra(BatteryManager.EXTRA_STATUS, -1) ?: -1
             val isCharging: Boolean = status == BatteryManager.BATTERY_STATUS_CHARGING || status == BatteryManager.BATTERY_STATUS_FULL
 
-            if (!isCharging || batteryPct!! < 60) {
+            if (!isCharging || !almerBatteryStats.isPluggedInOverHour()) {
                 Log.i(
                     "AlmerOTA",
-                    "Skipping auto reboot after OTA as battery status is not as expected. Is Charging: $isCharging, Level: $batteryPct"
+                    "Skipping auto reboot after OTA as battery status is not as expected. Is Charging: $isCharging, Level: ${almerBatteryStats.isPluggedInOverHour()}"
                 )
                 return
             }
+
+            //Check time..
             val now = LocalDateTime.now()
             val _3am = now.withHour(3).withMinute(0).withSecond(0)
             val _5am = now.withHour(5).withMinute(0).withSecond(0)
@@ -224,6 +227,7 @@ class ABUpdateActionHandler @Inject constructor(
                 return
             }
 
+            //All conditions are OK, let's reboot!
             rebootDevice()
 
 
